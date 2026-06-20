@@ -1,6 +1,6 @@
 # Agentic Playwright MCP
 
-让 AI Agent 写 Python 脚本来控制浏览器的 MCP Server。
+让 AI Agent 写 Python 脚本来控制浏览器的 MCP Server 框架。
 
 基于 Playwright，支持可选的 [CloakBrowser](https://github.com/CloakHQ/CloakBrowser) 反检测引擎。
 
@@ -20,6 +20,25 @@ graph LR
     F -->|是| G[自愈机制]
     G --> H[视觉 fallback]
     H --> I[记录新经验]
+```
+
+## 当前能力
+
+| 场景 | 程度 | 说明 |
+|------|------|------|
+| **简单任务**（搜索、导航、截图） | :material-check: 可用 | 直接跑通 |
+| **中等任务**（登录、填表、翻页） | :material-alert: 有限 | 有模板，需要适配站点 |
+| **复杂任务**（多步骤、跨页面） | :material-alert: 有限 | Agent 循环能跑，推理能力有限 |
+| **企业级任务**（无人值守、高可靠） | :material-clock: 待开发 | 需要持久化、状态管理 |
+
+**已适配站点**：百度搜索、GitHub 登录
+
+**端到端演示**：
+
+```
+用户: 帮我在百度搜索 Python 教程
+AI:   调用 run_task("帮我在百度搜索 Python 教程")
+      → Agent: 截图→查技能→执行脚本→返回结果
 ```
 
 ## 架构概览
@@ -94,8 +113,9 @@ graph TB
 
 ```bash
 # 安装
-pip install -e .
-playwright install chromium
+git clone https://github.com/zceeeeee/agentic-playwright-mcp.git
+cd agentic-playwright-mcp
+make dev
 
 # 配置
 cp .env.example .env
@@ -108,6 +128,7 @@ browser-agent serve
 
 ## 文档导航
 
+- [团队介绍](team-intro.md) — 项目概览 + 协作指南
 - [快速开始](quickstart.md) — 5 分钟上手
 - [架构概览](architecture.md) — 系统分层设计
 - [技能库](skills.md) — 如何创建自定义技能
@@ -117,12 +138,11 @@ browser-agent serve
 ## 示例
 
 ```bash
-# 运行示例
-python examples/01_basic_browser.py
-python examples/02_script_engine.py
-python examples/03_domain_automation.py
-python examples/04_event_hooks.py
-python examples/05_mcp_client.py
+python examples/01_basic_browser.py    # 基础浏览器操作
+python examples/02_script_engine.py    # 脚本引擎演示
+python examples/03_domain_automation.py # 域配置自动化
+python examples/04_event_hooks.py      # 事件钩子演示
+python examples/05_mcp_client.py       # MCP 客户端连接
 ```
 
 ## 统计
@@ -133,6 +153,6 @@ python examples/05_mcp_client.py
 | Python 源文件 | 22 个 |
 | 测试用例 | 475 个 |
 | 控件函数 | 15 个 |
-| 站点适配器 | 2 个 |
-| 通用模板 | 4 个 |
+| 已适配站点 | 2 个（百度、GitHub） |
+| 通用模板 | 4 个（登录、搜索、表单、分页） |
 | 说明文档 | 6 份 |

@@ -1,6 +1,6 @@
 # Agentic Playwright MCP
 
-让 AI Agent 写 Python 脚本来控制浏览器的 MCP Server。
+让 AI Agent 写 Python 脚本来控制浏览器的 MCP Server 框架。
 
 基于 Playwright，支持可选的 [CloakBrowser](https://github.com/CloakHQ/CloakBrowser) 反检测引擎。
 
@@ -14,34 +14,52 @@
    ↳ 若失败 → 自愈机制尝试 → 视觉 fallback → 记录新经验
 ```
 
+## 当前能力
+
+| 场景 | 程度 | 说明 |
+|------|------|------|
+| **简单任务**（搜索、导航、截图） | ✅ 可用 | 直接跑通 |
+| **中等任务**（登录、填表、翻页） | ⚠️ 有限 | 有模板，需要适配站点 |
+| **复杂任务**（多步骤、跨页面） | ⚠️ 有限 | Agent 循环能跑，推理能力有限 |
+| **企业级任务**（无人值守、高可靠） | 🔲 待开发 | 需要持久化、状态管理 |
+
+**已适配站点**：百度搜索、GitHub 登录
+
+**端到端演示**：
+```
+用户: 帮我在百度搜索 Python 教程
+AI:   调用 run_task("帮我在百度搜索 Python 教程")
+      → Agent: 截图→查技能→执行脚本→返回结果
+```
+
 ## 架构
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│              MCP Tools (8 个入口)                         │
-│  run_task │ browse_skills │ get_skill │ run_script │ ... │
+│  MCP 协议层（8 个工具）                                    │
+│  run_task │ browse_skills │ run_script │ analyze_page   │
 └──────┬──────────┬──────────┬────────────┬───────────────┘
        │          │          │            │
        ▼          ▼          ▼            ▼
   ┌─────────┐ ┌────────┐ ┌──────────┐ ┌────────┐
   │  Skill  │ │ Script │ │  Agent   │ │ Vision │
   │ Library │ │ Engine │ │  Loop    │ │ Module │
-  └─────────┘ └────────┘ └────┬─────┘ └────────┘
-                              │
-                  ┌───────────┼───────────┐
-                  ▼           ▼           ▼
-            ┌──────────┐ ┌────────┐ ┌─────────┐
-            │ Controls │ │ Layer1 │ │ Layer3  │
-            │ (控件层)  │ │ (原语层)│ │ (域配置) │
-            └──────────┘ └────────┘ └─────────┘
-                  │           │           │
-                  ▼           ▼           ▼
-            ┌─────────────────────────────────┐
-            │     Playwright / CloakBrowser    │
-            └─────────────────────────────────┘
+  └─────────┘ └────┬───┘ └──────────┘ └────────┘
+                   │
+       ┌───────────┼───────────┐
+       ▼           ▼           ▼
+ ┌──────────┐ ┌────────┐ ┌─────────┐
+ │ Controls │ │ Layer1 │ │ Layer3  │
+ │ (控件层)  │ │(原语层) │ │(域配置) │
+ └──────────┘ └────────┘ └─────────┘
+                   │
+                   ▼
+ ┌─────────────────────────────────┐
+ │  Playwright / CloakBrowser      │
+ └─────────────────────────────────┘
 ```
 
-| 层级 | 职责 | 状态 |
+| 模块 | 职责 | 状态 |
 |------|------|------|
 | **Agent 循环** | OBSERVE→PLAN→ACT 自主执行 | ✅ |
 | **脚本引擎** | 受限沙箱执行 AI 生成的 Python 脚本 | ✅ |
@@ -71,7 +89,7 @@
 
 ```bash
 # 1. 克隆仓库
-git clone <repo-url>
+git clone https://github.com/zceeeeee/agentic-playwright-mcp.git
 cd agentic-playwright-mcp
 
 # 2. 一键安装（依赖 + Playwright 浏览器）
@@ -120,32 +138,15 @@ skills:
 
 ```python
 # src/skill_library/domains/my_site.py
-from src.skill_library.skill_base import SkillBase, SkillContext, SkillResult
-
-class MySiteSkill(SkillBase):
-    id = "my_site"
-    name = "我的网站"
-    type = "domain"
-    triggers = ["我的网站"]
-    url_patterns = ["mysite.com"]
-    description = "我的网站适配器"
-
-    def execute(self, page, context: SkillContext) -> SkillResult:
-        # 实现自动化逻辑
-        return SkillResult(success=True, output="完成")
+def run(keyword: str):
+    """在我的网站搜索关键词。"""
+    goto("https://www.mysite.com")
+    fill("#search", keyword)
+    click("#search-btn")
+    wait_for_navigation()
 ```
 
-## 使用示例
-
-### 在 Claude Desktop 中
-
-```
-用户: 帮我在百度搜索 Python 教程
-AI:   调用 run_task("帮我在百度搜索 Python 教程")
-      → Agent 自动: 截图→分析→查技能→执行→返回结果
-```
-
-### 脚本引擎可用函数
+## 脚本引擎可用函数
 
 ```python
 # 导航
@@ -198,31 +199,13 @@ make docs        # 启动本地文档服务器
 make docs-build  # 构建静态文档
 ```
 
-文档部署到 GitHub Pages：`make docs-deploy`
-
 ## 项目结构
 
 ```
 agentic-playwright-mcp/
-├── pyproject.toml                    # 项目配置 + 依赖
-├── .env.example                      # 环境变量模板
-├── Makefile                          # 快捷命令
-├── Dockerfile                        # 容器化部署
-├── mkdocs.yml                        # 文档配置
-├── .github/workflows/ci.yml         # CI
-│
-├── domains/                          # 站点选择器配置
-│   └── example_baidu.yaml
-│
-├── skills/                           # 声明式技能配置
-│   ├── baidu_search.yaml
-│   └── generic_login.yaml
-│
 ├── src/
 │   ├── server.py                     # MCP 入口（8 个工具）
 │   ├── cli.py                        # CLI (serve/run/doctor)
-│   ├── config.py                     # 配置加载
-│   ├── logging.py                    # 结构化日志
 │   ├── core/
 │   │   ├── agent_loop.py             # Agent 循环引擎
 │   │   ├── script_engine.py          # 脚本执行引擎
@@ -235,15 +218,13 @@ agentic-playwright-mcp/
 │   └── skill_library/                # 标准脚本库
 │       ├── skill_base.py             # SkillBase 抽象类
 │       ├── skills.yaml               # 声明式配置
-│       ├── registry.py               # 技能注册
 │       ├── domains/                  # 站点适配器
 │       ├── interactions/             # 通用模板
 │       └── guides/                   # 说明文档
-│
+├── domains/                          # 站点选择器配置
 ├── tests/                            # 475 个测试，全部通过
 ├── docs/                             # MkDocs 文档
-├── examples/                         # 示例脚本
-└── workflows/                        # Workflow 脚本
+└── examples/                         # 示例脚本
 ```
 
 ## 开发
