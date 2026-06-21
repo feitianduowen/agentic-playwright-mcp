@@ -8,6 +8,7 @@
 #   sources  - 文件映射列表（对应 SkillFileMapping，用于动态加载和实例化）
 
 skills:
+  # 搜索引擎
   - id: "domain/baidu_search"
     name: "百度搜索"
     type: "domain"
@@ -16,6 +17,23 @@ skills:
     description: "在百度搜索关键词并返回结果"
     version: "1.0.0"
 
+  - id: "domain/google_search"
+    name: "Google 搜索"
+    type: "domain"
+    triggers: ["google", "谷歌", "搜索", "search"]
+    url_patterns: ["google.com"]
+    description: "在 Google 搜索关键词"
+    version: "1.0.0"
+
+  - id: "domain/bing_search"
+    name: "Bing 搜索"
+    type: "domain"
+    triggers: ["bing", "必应", "搜索", "search"]
+    url_patterns: ["bing.com"]
+    description: "在 Bing 搜索关键词"
+    version: "1.0.0"
+
+  # GitHub
   - id: "domain/github_login"
     name: "GitHub 登录"
     type: "domain"
@@ -24,6 +42,75 @@ skills:
     description: "登录 GitHub 账号"
     version: "1.0.0"
 
+  - id: "domain/github_search"
+    name: "GitHub 搜索"
+    type: "domain"
+    triggers: ["github", "搜索", "search", "仓库", "repo"]
+    url_patterns: ["github.com/search"]
+    description: "在 GitHub 搜索仓库/代码/用户"
+    version: "1.0.0"
+
+  - id: "domain/github_repos"
+    name: "GitHub 仓库列表"
+    type: "domain"
+    triggers: ["github", "仓库", "repos", "项目"]
+    url_patterns: ["github.com"]
+    description: "查看 GitHub 仓库列表"
+    version: "1.0.0"
+
+  # 电商
+  - id: "domain/amazon_search"
+    name: "Amazon 搜索"
+    type: "domain"
+    triggers: ["amazon", "亚马逊", "购物", "商品"]
+    url_patterns: ["amazon.com"]
+    description: "在 Amazon 搜索商品"
+    version: "1.0.0"
+
+  # 邮箱
+  - id: "domain/gmail_inbox"
+    name: "Gmail 收件箱"
+    type: "domain"
+    triggers: ["gmail", "谷歌邮箱", "邮件", "收件箱"]
+    url_patterns: ["mail.google.com"]
+    description: "打开 Gmail 收件箱"
+    version: "1.0.0"
+
+  - id: "domain/outlook_inbox"
+    name: "Outlook 收件箱"
+    type: "domain"
+    triggers: ["outlook", "微软邮箱", "邮件", "收件箱"]
+    url_patterns: ["outlook.live.com"]
+    description: "打开 Outlook 收件箱"
+    version: "1.0.0"
+
+  # 视频
+  - id: "domain/youtube_search"
+    name: "YouTube 搜索"
+    type: "domain"
+    triggers: ["youtube", "油管", "视频", "搜索"]
+    url_patterns: ["youtube.com"]
+    description: "在 YouTube 搜索视频"
+    version: "1.0.0"
+
+  # 社交媒体
+  - id: "domain/weibo_search"
+    name: "微博搜索"
+    type: "domain"
+    triggers: ["微博", "weibo", "搜索"]
+    url_patterns: ["weibo.com"]
+    description: "在微博搜索"
+    version: "1.0.0"
+
+  - id: "domain/zhihu_search"
+    name: "知乎搜索"
+    type: "domain"
+    triggers: ["知乎", "zhihu", "搜索", "问答"]
+    url_patterns: ["zhihu.com"]
+    description: "在知乎搜索"
+    version: "1.0.0"
+
+  # 通用交互模板
   - id: "interaction/login_flow"
     name: "通用登录"
     type: "interaction"
@@ -63,8 +150,48 @@ sources:
     file: "domains/baidu_search.py"
     entry: "run"
 
+  - id: "domain/google_search"
+    file: "domains/google_search.py"
+    entry: "run"
+
+  - id: "domain/bing_search"
+    file: "domains/bing_search.py"
+    entry: "run"
+
   - id: "domain/github_login"
     file: "domains/github_login.py"
+    entry: "run"
+
+  - id: "domain/github_search"
+    file: "domains/github_search.py"
+    entry: "run"
+
+  - id: "domain/github_repos"
+    file: "domains/github_repos.py"
+    entry: "run"
+
+  - id: "domain/amazon_search"
+    file: "domains/amazon_search.py"
+    entry: "run"
+
+  - id: "domain/gmail_inbox"
+    file: "domains/gmail_inbox.py"
+    entry: "run"
+
+  - id: "domain/outlook_inbox"
+    file: "domains/outlook_inbox.py"
+    entry: "run"
+
+  - id: "domain/youtube_search"
+    file: "domains/youtube_search.py"
+    entry: "run"
+
+  - id: "domain/weibo_search"
+    file: "domains/weibo_search.py"
+    entry: "run"
+
+  - id: "domain/zhihu_search"
+    file: "domains/zhihu_search.py"
     entry: "run"
 
   - id: "interaction/login_flow"

@@ -42,6 +42,7 @@ from src.core.event_bus import (
     get_event_bus,
 )
 from src.core.script_engine import ScriptResult, get_script_engine
+from src.core.script_generator import ScriptGenerator
 from src.core.vision import PageAnalysis, VisionModule, get_vision_module
 from src.layer_2.controls import get_controls_exports
 from src.logging import bind_context, get_logger, log_timing
@@ -130,6 +131,7 @@ class AgentLoop:
         self._vision: VisionModule | None = None
         self._registry: SkillRegistry | None = None
         self._script_engine = None
+        self._script_generator = ScriptGenerator()
 
     def run(self, task: str) -> AgentTaskResult:
         """执行一个自然语言任务。
@@ -446,71 +448,9 @@ class AgentLoop:
     def _generate_script(self, task: str, page_summary: str) -> str | None:
         """根据任务描述生成脚本。
 
-        使用简单规则匹配，从通用模板中选择合适的脚本。
+        使用 ScriptGenerator 进行意图解析和脚本生成。
         """
-        task_lower = task.lower()
-
-        # 搜索任务
-        if any(kw in task_lower for kw in ["搜索", "search", "查找", "找"]):
-            # 提取关键词
-            keyword = self._extract_keyword(task)
-            if keyword:
-                return f"""goto("https://www.baidu.com")
-fill("#kw", "{keyword}")
-click("#su")
-wait_for_navigation()
-log("搜索完成: {keyword}")"""
-
-        # 登录任务
-        if any(kw in task_lower for kw in ["登录", "login", "sign in"]):
-            return None  # 登录需要更多信息，交给视觉 fallback
-
-        # 导航任务
-        if any(kw in task_lower for kw in ["打开", "导航", "goto", "open"]):
-            url = self._extract_url(task)
-            if url:
-                return f"""goto("{url}")
-log("导航完成")"""
-
-        # 截图任务
-        if any(kw in task_lower for kw in ["截图", "screenshot"]):
-            return 'screenshot("task_screenshot.png")'
-
-        # 默认：尝试视觉 fallback
-        return None
-
-    def _extract_keyword(self, task: str) -> str | None:
-        """从任务描述中提取搜索关键词。"""
-        # 简单规则：去掉动词，剩下的就是关键词
-        prefixes = ["帮我在百度搜索", "在百度搜索", "搜索", "百度搜索",
-                     "search for", "search", "查找", "找"]
-        keyword = task
-        for prefix in prefixes:
-            if prefix in keyword.lower():
-                idx = keyword.lower().index(prefix)
-                keyword = keyword[idx + len(prefix):]
-                break
-
-        keyword = keyword.strip(" \t\n\r，。,.的")
-        return keyword if keyword else None
-
-    def _extract_url(self, task: str) -> str | None:
-        """从任务描述中提取 URL。"""
-        import re
-        # 匹配完整 URL（允许路径和查询参数中的点）
-        url_pattern = r'https?://[\w\-./?=&%#+~]+'
-        match = re.search(url_pattern, task)
-        if match:
-            url = match.group(0).rstrip(".,;:!?")
-            return url
-
-        # 尝试匹配域名
-        domain_pattern = r'[\w-]+\.(com|cn|org|net|io|dev)'
-        match = re.search(domain_pattern, task)
-        if match:
-            return f"https://{match.group(0)}"
-
-        return None
+        return self._script_generator.generate(task, page_summary)
 
     # -------------------------------------------------------------------
     # ACT: 执行脚本
