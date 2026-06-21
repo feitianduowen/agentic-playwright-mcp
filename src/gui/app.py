@@ -509,7 +509,14 @@ def index():
 
 @app.route("/api/run", methods=["POST"])
 def api_run():
-    """执行任务 API。"""
+    """执行任务 API。
+
+    Playwright sync API 不支持跨线程调用，所以每个请求
+    必须在同一线程内完成 launch → run → close 全流程。
+    """
+    from src.core.script_engine import reset_script_engine
+    from src.core.browser_manager import reset_browser_manager
+
     data = request.json
     task = data.get("task", "")
     headless = data.get("headless", False)
@@ -526,18 +533,23 @@ def api_run():
         else:
             os.environ["USE_CLOAKBROWSER"] = "false"
 
-        # 重置状态，确保干净的执行环境
-        from src.core.script_engine import reset_script_engine
+        # 重置所有状态（确保线程安全）
         reset_script_engine()
+        reset_browser_manager()
 
-        # 启动浏览器（如果未启动）
+        # 在当前线程启动浏览器
         bm = get_browser_manager()
-        if not bm.is_alive():
-            bm.launch(headless=headless)
+        bm.launch(headless=headless)
 
         # 执行任务
         agent = AgentLoop(max_steps=max_steps)
         result = agent.run(task)
+
+        # 保存最终 URL
+        final_url = result.final_url or ""
+
+        # 关闭浏览器
+        bm.close()
 
         return jsonify({
             "success": result.success,
@@ -554,11 +566,16 @@ def api_run():
                 for s in result.steps
             ],
             "output": result.output,
-            "final_url": result.final_url,
+            "final_url": final_url,
             "error": result.error,
         })
 
     except Exception as exc:
+        # 尝试清理浏览器
+        try:
+            reset_browser_manager()
+        except Exception:
+            pass
         return jsonify({
             "success": False,
             "error": f"{type(exc).__name__}: {exc}",
@@ -568,7 +585,9 @@ def api_run():
 @app.route("/api/skills")
 def api_skills():
     """获取技能列表 API。"""
+    from src.skill_library.registry import reset_skill_registry
     try:
+        reset_skill_registry()
         library_dir = str(_project_root / "src" / "skill_library")
         registry = get_skill_registry(library_dir=library_dir)
         skills = registry.list_all()
