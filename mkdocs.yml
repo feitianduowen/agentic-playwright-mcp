@@ -99,6 +99,7 @@ nav:
   - 技能库: skills.md
   - 站点目录: site-catalog.md
   - 任务目录: task-catalog.md
+  - 测试规范: test-spec.md
   - 技能开发: skill-development-guide.md
   - API 参考: api.md
   - 决策记录:
