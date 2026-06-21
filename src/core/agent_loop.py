@@ -402,8 +402,10 @@ class AgentLoop:
             detail = self._registry.get_detail(skill.id)
 
             if detail and detail.source_code:
+                # 从任务中提取关键词，生成可执行脚本
+                script = self._build_skill_script(detail.source_code, task, skill.id)
                 step.action = f"使用技能: {skill.name}"
-                step.script = detail.source_code
+                step.script = script
                 step.result = f"找到技能: {skill.name}"
                 logger.info("PLAN: matched skill '%s'", skill.name)
                 self._bus.emit(Event(
@@ -451,6 +453,26 @@ class AgentLoop:
         使用 ScriptGenerator 进行意图解析和脚本生成。
         """
         return self._script_generator.generate(task, page_summary)
+
+    def _build_skill_script(self, source_code: str, task: str, skill_id: str) -> str:
+        """将技能源码转换为可执行脚本。
+
+        技能源码通常只定义函数（如 def run(keyword)），需要追加调用语句。
+        从任务描述中提取参数，自动调用函数。
+        """
+        # 提取关键词
+        keyword = self._script_generator._extract_keyword(task)
+        if not keyword:
+            keyword = task  # 降级：用整个任务描述作为关键词
+
+        # 检查源码是否已经包含调用语句（不是只定义函数）
+        if "run(" in source_code and "def run" not in source_code.split("run(")[-1][:20]:
+            # 已经有调用语句，直接返回
+            return source_code
+
+        # 追加调用语句
+        call_script = f'{source_code}\n\n# 自动调用\nrun("{keyword}")'
+        return call_script
 
     # -------------------------------------------------------------------
     # ACT: 执行脚本
