@@ -286,17 +286,32 @@ class ScriptGenerator:
         # 某些网站支持 URL 直接搜索
         url_search_engines = ["csdn", "gitee", "bilibili", "toutiao"]
         if engine in url_search_engines:
-            return f'''goto("{cfg["url"]}{keyword}")
-wait_for_navigation()
-log("{cfg['name']}搜索完成: {keyword}")'''
+            return f'goto("{cfg["url"]}{keyword}")\nwait_for_navigation()\nlog("{cfg["name"]}搜索完成: {keyword}")'
 
-        # 表单搜索
-        return f'''goto("{cfg["url"]}")
-wait_for_navigation()
-fill("{cfg["input"]}", "{keyword}")
-click("{cfg["submit"]}")
-wait_for_navigation()
-log("{cfg['name']}搜索完成: {keyword}")'''
+        # 某些网站需要用 JS 操作（headless 模式下元素可能被隐藏）
+        js_engines = ["baidu"]
+        if engine in js_engines:
+            url = cfg["url"]
+            inp = cfg["input"]
+            btn = cfg["submit"]
+            return (
+                f'goto("{url}")\n'
+                f'wait_for_navigation()\n'
+                f"run_js('document.querySelector(\\\"{inp}\\\").value = \\\"{keyword}\\\"')\n"
+                f"run_js('document.querySelector(\\\"{btn}\\\").click()')\n"
+                f'wait_for_navigation()\n'
+                f'log("{cfg["name"]}搜索完成: {keyword}")'
+            )
+
+        # 表单搜索（默认）
+        return (
+            f'goto("{cfg["url"]}")\n'
+            f'wait_for_navigation()\n'
+            f'fill("{cfg["input"]}", "{keyword}")\n'
+            f'click("{cfg["submit"]}")\n'
+            f'wait_for_navigation()\n'
+            f'log("{cfg["name"]}搜索完成: {keyword}")'
+        )
 
     def _gen_extract(self) -> str:
         return '''text = get_text()

@@ -479,6 +479,19 @@ def wait(seconds: float) -> str:
 # ---------------------------------------------------------------------------
 
 
+def run_js(code: str) -> Any:
+    """在页面中执行 JavaScript 代码。
+
+    Args:
+        code: JavaScript 代码字符串。
+
+    Returns:
+        JavaScript 执行结果。
+    """
+    page = get_browser_manager().get_page()
+    return page.evaluate(code)
+
+
 def get_page_url() -> str:
     """获取当前页面 URL。"""
     return get_browser_manager().get_page().url
@@ -548,4 +561,6 @@ def get_controls_exports() -> Dict[str, Any]:
         "get_title": get_page_title,
         "get_text": get_page_text,
         "screenshot": screenshot,
+        # JavaScript
+        "run_js": run_js,
     }

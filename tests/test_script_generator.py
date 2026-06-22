@@ -111,8 +111,8 @@ class TestGenerate:
         script = gen.generate("搜索 Python 教程")
         assert script is not None
         assert "goto" in script
-        assert "fill" in script
-        assert "click" in script
+        # Baidu uses run_js, other engines use fill
+        assert "fill" in script or "run_js" in script
 
     def test_navigate_script(self, gen):
         script = gen.generate("打开 https://example.com")
