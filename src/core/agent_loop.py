@@ -41,6 +41,7 @@ from src.core.event_bus import (
     Phase,
     get_event_bus,
 )
+from src.core.experience import ExperienceManager, get_experience_manager
 from src.core.script_engine import ScriptResult, get_script_engine
 from src.core.script_generator import ScriptGenerator
 from src.core.vision import PageAnalysis, VisionModule, get_vision_module
@@ -132,6 +133,7 @@ class AgentLoop:
         self._registry: SkillRegistry | None = None
         self._script_engine = None
         self._script_generator = ScriptGenerator()
+        self._experience: ExperienceManager | None = None
 
     def run(self, task: str) -> AgentTaskResult:
         """执行一个自然语言任务。
@@ -264,6 +266,9 @@ class AgentLoop:
         if self._script_engine is None:
             self._script_engine = get_script_engine()
             self._script_engine.register_functions(get_controls_exports())
+
+        if self._experience is None:
+            self._experience = get_experience_manager()
 
     # -------------------------------------------------------------------
     # Event emission helpers
@@ -421,7 +426,22 @@ class AgentLoop:
                 ))
                 return AgentState.ACT
 
-        # 2. 未命中 → 生成脚本
+        # 2. 查找已保存的脚本（经验复用）
+        saved_script = self._experience.find_script(task)
+        if saved_script and saved_script.script:
+            step.action = f"复用已保存脚本: {saved_script.id}"
+            step.script = saved_script.script
+            step.result = f"找到已保存脚本 (成功率: {saved_script.success_rate:.0%})"
+            logger.info("PLAN: reusing saved script '%s'", saved_script.id)
+            self._bus.emit(Event(
+                name=EVENT_AGENT_PLAN,
+                phase=Phase.AFTER,
+                data={"step_number": step.step_number, "source": "experience", "script_id": saved_script.id},
+                result=step.result,
+            ))
+            return AgentState.ACT
+
+        # 3. 未命中 → 生成脚本
         script = self._generate_script(task, step.page_summary)
         if script:
             step.action = "生成临时脚本"
@@ -481,6 +501,16 @@ class AgentLoop:
         call_script = f'{source_code}\n\n# 自动调用\nrun("{keyword_escaped}")'
         return call_script
 
+    def _extract_site(self, url: str) -> str:
+        """从 URL 中提取站点名称。"""
+        from urllib.parse import urlparse
+        try:
+            hostname = urlparse(url).hostname or ""
+            # 去掉 www. 前缀，取第一段
+            return hostname.removeprefix("www.").split(".")[0]
+        except Exception:
+            return ""
+
     # -------------------------------------------------------------------
     # ACT: 执行脚本
     # -------------------------------------------------------------------
@@ -526,6 +556,21 @@ class AgentLoop:
             if result.output:
                 step.result += f": {result.output.strip()[:100]}"
             logger.info("ACT: script executed successfully")
+
+            # 保存成功的脚本到经验库
+            if self._experience and script_to_run:
+                try:
+                    page = get_browser_manager().get_page()
+                    site = self._extract_site(page.url)
+                    self._experience.save_script(
+                        task=step.action or "unknown",
+                        script=script_to_run,
+                        site=site,
+                    )
+                    logger.debug("ACT: saved script to experience")
+                except Exception:
+                    pass  # 保存失败不影响主流程
+
             self._bus.emit(Event(
                 name=EVENT_AGENT_ACT,
                 phase=Phase.AFTER,
