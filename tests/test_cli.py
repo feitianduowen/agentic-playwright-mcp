@@ -380,7 +380,10 @@ class TestDoctorCommand:
             patch.object(Path, "is_file", return_value=True),
             patch.object(Path, "is_dir", return_value=True),
             patch.object(Path, "glob", return_value=[Path("example.yaml")]),
-            patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}),
+            patch.dict(
+                os.environ,
+                {"ANTHROPIC_API_KEY": "sk-test", "USE_CLOAKBROWSER": "false"},
+            ),
         ):
             result = runner.invoke(main, ["doctor"])
         assert result.exit_code == 0
@@ -415,6 +418,7 @@ class TestDoctorCommand:
             patch.object(Path, "is_file", return_value=False),
             patch.object(Path, "is_dir", return_value=True),
             patch.object(Path, "glob", return_value=[]),
+            patch.dict(os.environ, {"USE_CLOAKBROWSER": "false"}),
         ):
             result = runner.invoke(main, ["doctor"])
         # Should still exit 0 (warnings are non-fatal)
@@ -429,6 +433,7 @@ class TestDoctorCommand:
             patch.object(Path, "is_file", return_value=False),
             patch.object(Path, "is_dir", return_value=True),
             patch.object(Path, "glob", return_value=[Path("example.yaml")]),
+            patch.dict(os.environ, {"USE_CLOAKBROWSER": "false"}),
         ):
             result = runner.invoke(main, ["doctor"])
         assert result.exit_code == 0
