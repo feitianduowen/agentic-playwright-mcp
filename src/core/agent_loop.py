@@ -523,6 +523,23 @@ class AgentLoop:
                 f"{json.dumps(password, ensure_ascii=False)})"
             )
 
+        if skill_id in {"domain/xiaohongshu_login", "domain/douyin_login"}:
+            phone_number = self._extract_phone_number(task)
+            if not phone_number:
+                site_name = (
+                    "Douyin"
+                    if skill_id == "domain/douyin_login"
+                    else "Xiaohongshu"
+                )
+                return (
+                    f"{source_code}\n\n"
+                    f"raise ValueError('{site_name} login requires phone number')"
+                )
+            return (
+                f"{source_code}\n\n# 自动调用\n"
+                f"run({json.dumps(phone_number, ensure_ascii=False)})"
+            )
+
         # 提取关键词
         keyword = self._script_generator._extract_keyword(task)
         if not keyword:
@@ -562,6 +579,19 @@ class AgentLoop:
         )
         if username and password:
             return username, password
+        return None
+
+    @staticmethod
+    def _extract_phone_number(task: str) -> str | None:
+        import re
+
+        candidates = re.findall(r"(?:\+?86[-\s]*)?1[3-9](?:[-\s]*\d){9}", task)
+        for candidate in candidates:
+            digits = re.sub(r"\D", "", candidate)
+            if digits.startswith("86") and len(digits) == 13:
+                digits = digits[2:]
+            if re.fullmatch(r"1[3-9]\d{9}", digits):
+                return digits
         return None
 
     def _select_best_skill(self, skills: list[Any], task: str) -> Any:
