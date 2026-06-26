@@ -224,6 +224,18 @@ class TestGitHubLoginScript:
 
         assert 'run("13800138000")' in script
 
+    def test_build_douyin_login_script_passes_phone_number(self):
+        agent = AgentLoop(max_steps=3)
+        source = "def run(phone_number):\n    log(phone_number)"
+
+        script = agent._build_skill_script(
+            source,
+            "抖音登录，电话号码是13574133406",
+            "domain/douyin_login",
+        )
+
+        assert 'run("13574133406")' in script
+
 
 # ---------------------------------------------------------------------------
 # Full loop

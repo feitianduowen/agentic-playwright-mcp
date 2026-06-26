@@ -1,0 +1,71 @@
+name: douyin
+base_url: https://www.douyin.com/discover
+locators:
+  login_button:
+    css:
+      - "#douyin-header button.semi-button-primary"
+      - "#douyin-header [role='button'].semi-button-primary"
+      - "#douyin-header-menuCt button.semi-button-primary"
+      - "#douyin-header-menuCt [role='button'].semi-button-primary"
+      - "#douyin-right-container button.semi-button-primary"
+      - "#douyin-right-container [role='button'].semi-button-primary"
+      - "#douyin-header button:has-text('登录')"
+      - "#douyin-header [role='button']:has-text('登录')"
+      - "#douyin-header-menuCt button:has-text('登录')"
+      - "#douyin-header-menuCt [role='button']:has-text('登录')"
+      - "#douyin-right-container button:has-text('登录')"
+      - "#douyin-right-container [role='button']:has-text('登录')"
+      - "button.semi-button-primary:has-text('登录')"
+    xpath:
+      - "//*[@id='douyin-header']//button[normalize-space(.)='登录']"
+      - "//*[@id='douyin-header']//*[@role='button' and normalize-space(.)='登录']"
+      - "//*[@id='douyin-header-menuCt']//*[self::button or @role='button'][normalize-space(.)='登录']"
+      - "//*[@id='douyin-right-container']//*[self::button or @role='button'][normalize-space(.)='登录']"
+      - "//*[self::button or @role='button'][contains(@class, 'semi-button-primary') and normalize-space(.)='登录']"
+
+  phone:
+    css:
+      - "input#normal-input"
+      - "input[name='normal-input']"
+      - "input[placeholder*='请输入手机号']"
+      - "input[placeholder*='手机号']"
+      - "input[type='tel']"
+      - "input[name*='phone' i]"
+      - "input[name*='mobile' i]"
+    xpath:
+      - "//input[contains(@placeholder, '请输入手机号') or contains(@placeholder, '手机号')]"
+
+  verification_code:
+    css:
+      - "input#button-input"
+      - "input[name='button-input']"
+      - "input[placeholder*='请输入验证码']"
+      - "input[placeholder*='验证码']"
+    xpath:
+      - "//input[contains(@placeholder, '请输入验证码') or contains(@placeholder, '验证码')]"
+
+  get_code:
+    css:
+      - "input#normal-input ~ *:has-text('发送验证码')"
+      - "input[name='normal-input'] ~ *:has-text('发送验证码')"
+      - "input[placeholder*='手机号'] ~ *:has-text('发送验证码')"
+      - "span:has-text('发送验证码')"
+      - "div:has-text('发送验证码')"
+      - "#douyin_login_comp_button_input_id"
+      - "input[placeholder*='验证码'] ~ *:has-text('获取验证码')"
+      - "input[placeholder*='验证码'] + *:has-text('获取验证码')"
+      - "input[placeholder*='验证码'] ~ *:has-text('发送验证码')"
+      - "input[placeholder*='验证码'] + *:has-text('发送验证码')"
+      - "text=获取验证码"
+      - "text=发送验证码"
+      - "button:has-text('获取验证码')"
+      - "button:has-text('发送验证码')"
+      - "[role='button']:has-text('获取验证码')"
+      - "[role='button']:has-text('发送验证码')"
+    xpath:
+      - "//input[@id='normal-input' or @name='normal-input' or contains(@placeholder, '手机号')]/following::*[self::button or @role='button' or self::div or self::span][contains(normalize-space(.), '发送验证码') and not(contains(normalize-space(.), '收不到'))][1]"
+      - "//input[contains(@placeholder, '验证码')]/following::*[self::button or @role='button' or self::div or self::span][contains(normalize-space(.), '获取验证码') and not(contains(normalize-space(.), '收不到'))][1]"
+      - "//input[contains(@placeholder, '验证码')]/following::*[self::button or @role='button' or self::div or self::span][contains(normalize-space(.), '发送验证码') and not(contains(normalize-space(.), '收不到'))][1]"
+      - "//*[@id='douyin_login_comp_button_input_id']"
+      - "//*[self::button or @role='button' or self::div or self::span][contains(normalize-space(.), '获取验证码') and not(contains(normalize-space(.), '收不到'))]"
+      - "//*[self::button or @role='button' or self::div or self::span][contains(normalize-space(.), '发送验证码') and not(contains(normalize-space(.), '收不到'))]"

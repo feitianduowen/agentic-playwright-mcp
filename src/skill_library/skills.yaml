@@ -94,6 +94,14 @@ skills:
     version: "1.0.0"
 
   # 社交媒体
+  - id: "domain/douyin_login"
+    name: "抖音验证码登录"
+    type: "domain"
+    triggers: ["抖音", "douyin", "douyin.com", "登录", "login", "验证码"]
+    url_patterns: ["douyin.com", "*.douyin.com"]
+    description: "填写抖音手机号并获取短信验证码，验证码由用户手动输入"
+    version: "1.0.0"
+
   - id: "domain/xiaohongshu_login"
     name: "小红书验证码登录"
     type: "domain"
@@ -192,6 +200,10 @@ sources:
 
   - id: "domain/youtube_search"
     file: "search/youtube_search.py"
+    entry: "run"
+
+  - id: "domain/douyin_login"
+    file: "others/douyin_login.py"
     entry: "run"
 
   - id: "domain/xiaohongshu_login"

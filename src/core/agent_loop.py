@@ -523,12 +523,17 @@ class AgentLoop:
                 f"{json.dumps(password, ensure_ascii=False)})"
             )
 
-        if skill_id == "domain/xiaohongshu_login":
+        if skill_id in {"domain/xiaohongshu_login", "domain/douyin_login"}:
             phone_number = self._extract_phone_number(task)
             if not phone_number:
+                site_name = (
+                    "Douyin"
+                    if skill_id == "domain/douyin_login"
+                    else "Xiaohongshu"
+                )
                 return (
                     f"{source_code}\n\n"
-                    "raise ValueError('Xiaohongshu login requires phone number')"
+                    f"raise ValueError('{site_name} login requires phone number')"
                 )
             return (
                 f"{source_code}\n\n# 自动调用\n"

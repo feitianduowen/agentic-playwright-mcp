@@ -96,6 +96,7 @@ def _domain_from_task(task: str) -> str | None:
     aliases = {
         "zhihu": ("知乎",),
         "weibo": ("微博",),
+        "douyin": ("抖音",),
         "xiaohongshu": ("小红书",),
     }
 

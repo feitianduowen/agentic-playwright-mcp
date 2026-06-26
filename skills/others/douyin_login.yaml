@@ -1,0 +1,52 @@
+id: douyin_login
+name: 抖音验证码登录
+type: domain
+description: 打开抖音登录页，填写手机号并点击获取验证码；验证码由用户手动输入。
+version: "1.0.0"
+
+triggers:
+  - 抖音
+  - douyin
+  - douyin.com
+  - 登录
+  - login
+  - 验证码
+
+url_patterns:
+  - douyin.com
+  - "*.douyin.com"
+
+domain: douyin
+
+parameters:
+  phone_number:
+    type: string
+    required: true
+    description: 用户手机号，例如 13574133406。
+  login_url:
+    type: string
+    required: false
+    default: "https://www.douyin.com/discover"
+    description: 抖音登录入口 URL。
+
+steps:
+  - action: goto
+    args:
+      url: "{{login_url}}"
+    comment: 打开抖音页面
+
+  - action: smart_click
+    target: login_button
+    comment: 点击页面右上角红色“登录”按钮，打开登录弹窗
+    on_error: continue
+
+  - action: smart_fill
+    target: phone
+    value: "{{phone_number}}"
+    comment: 填写手机号
+    on_error: stop
+
+  - action: smart_click
+    target: get_code
+    comment: 点击验证码输入框右侧的获取验证码，后续由用户手动输入短信验证码
+    on_error: stop
