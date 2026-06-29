@@ -1,0 +1,76 @@
+id: bilibili_comment
+name: Bilibili 视频评论
+type: domain
+description: 完成 Bilibili 短信登录后进入视频页面，填写评论内容并点击发送。
+version: "1.0.0"
+
+triggers:
+  - bilibili
+  - B站
+  - b站
+  - 哔哩哔哩
+  - 哔哩
+  - 评论
+  - 留言
+  - 交流
+  - 回复
+  - 讨论
+  - 视频
+  - 发评论
+  - 发布评论
+  - 视频评论
+  - 视频留言
+
+url_patterns:
+  - bilibili.com
+  - "*.bilibili.com"
+  - bilibili.com/video/
+
+domain: bilibili
+
+parameters:
+  phone_number:
+    type: string
+    required: true
+    description: 用户手机号，例如 13574133406。
+  comment_text:
+    type: string
+    required: true
+    description: 评论内容。
+  video_url:
+    type: string
+    required: false
+    default: "https://www.bilibili.com/video/BV1oh7b6xE4R"
+    description: Bilibili 视频 URL。
+
+steps:
+  - action: goto
+    args:
+      url: "https://www.bilibili.com"
+    comment: 打开 Bilibili 首页并完成短信登录
+
+  - action: smart_click
+    target: login_button
+    comment: 点击右上角“登录”图标
+    on_error: continue
+
+  - action: smart_click
+    target: sms_login
+    comment: 切换到短信登录并等待用户完成人机认证和短信登录
+    on_error: continue
+
+  - action: goto
+    args:
+      url: "{{video_url}}"
+    comment: 进入 Bilibili 视频页面
+
+  - action: smart_fill
+    target: comment_input
+    value: "{{comment_text}}"
+    comment: 填写评论内容
+    on_error: stop
+
+  - action: smart_click
+    target: send_comment_button
+    comment: 点击发送评论按钮
+    on_error: stop

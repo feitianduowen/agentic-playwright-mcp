@@ -1,4 +1,4 @@
-# 团队开发指南
+﻿# 团队开发指南
 
 > 本文档面向新加入的组员，帮助你快速理解项目全貌并开始贡献代码。
 
@@ -277,7 +277,7 @@ locators:
 
 **步骤**：
 
-1. 创建技能源码 `src/skill_library/domains/xxx.py`：
+1. 创建技能源码 `src/skill_library/<category>/xxx.py`：
 ```python
 """XXX 站点技能。"""
 
@@ -302,7 +302,7 @@ def run(keyword: str = ""):
   "type": "domain",
   "triggers": ["xxx", "搜索"],
   "url_patterns": ["xxx.com"],
-  "file": "domains/xxx.py",
+  "file": "search/xxx.py",
   "function": "run",
   "description": "在 XXX 搜索关键词"
 }

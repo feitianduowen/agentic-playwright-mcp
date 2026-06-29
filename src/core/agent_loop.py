@@ -568,14 +568,64 @@ class AgentLoop:
                 f"{json.dumps(password, ensure_ascii=False)})"
             )
 
-        if skill_id in {"domain/xiaohongshu_login", "domain/douyin_login"}:
+        if skill_id == "domain/bilibili_publish":
+            phone_number = self._extract_phone_number(task)
+            title, body = self._extract_bilibili_publish_fields(task)
+            missing = []
+            if not phone_number:
+                missing.append("phone number")
+            if not title:
+                missing.append("title")
+            if not body:
+                missing.append("body")
+            if missing:
+                return (
+                    f"{source_code}\n\n"
+                    f"raise ValueError('Bilibili publish requires {', '.join(missing)}')"
+                )
+            return (
+                f"{source_code}\n\n# 自动调用\n"
+                f"run({json.dumps(phone_number, ensure_ascii=False)}, "
+                f"{json.dumps(title, ensure_ascii=False)}, "
+                f"{json.dumps(body, ensure_ascii=False)})"
+            )
+
+        if skill_id == "domain/bilibili_comment":
+            phone_number = self._extract_phone_number(task)
+            comment_text = self._extract_comment_text(task)
+            video_url = self._extract_video_url(task)
+            missing = []
+            if not phone_number:
+                missing.append("phone number")
+            if not comment_text:
+                missing.append("comment text")
+            if missing:
+                return (
+                    f"{source_code}\n\n"
+                    f"raise ValueError('Bilibili comment requires {', '.join(missing)}')"
+                )
+            if video_url:
+                return (
+                    f"{source_code}\n\n# 自动调用\n"
+                    f"run({json.dumps(phone_number, ensure_ascii=False)}, "
+                    f"{json.dumps(comment_text, ensure_ascii=False)}, "
+                    f"video_url={json.dumps(video_url, ensure_ascii=False)})"
+                )
+            return (
+                f"{source_code}\n\n# 自动调用\n"
+                f"run({json.dumps(phone_number, ensure_ascii=False)}, "
+                f"{json.dumps(comment_text, ensure_ascii=False)})"
+            )
+
+        phone_login_sites = {
+            "domain/xiaohongshu_login": "Xiaohongshu",
+            "domain/douyin_login": "Douyin",
+            "domain/bilibili_login": "Bilibili",
+        }
+        if skill_id in phone_login_sites:
             phone_number = self._extract_phone_number(task)
             if not phone_number:
-                site_name = (
-                    "Douyin"
-                    if skill_id == "domain/douyin_login"
-                    else "Xiaohongshu"
-                )
+                site_name = phone_login_sites[skill_id]
                 return (
                     f"{source_code}\n\n"
                     f"raise ValueError('{site_name} login requires phone number')"
@@ -639,6 +689,89 @@ class AgentLoop:
                 digits = digits[2:]
             if re.fullmatch(r"1[3-9]\d{9}", digits):
                 return digits
+        return None
+
+    @staticmethod
+    def _extract_bilibili_publish_fields(task: str) -> tuple[str | None, str | None]:
+        import re
+
+        def clean(value: str | None) -> str | None:
+            if not value:
+                return None
+            text = value.strip().strip("'\"`“”‘’").rstrip("，,；;。 \n\r\t")
+            return text or None
+
+        title_patterns = [
+            r"(?:标题|题目|title)\s*(?:是|为|:|：|=)?\s*['\"“”‘’]?(.*?)(?=(?:正文|内容|文章内容|body|content)\s*(?:是|为|:|：|=)|$)",
+        ]
+        body_patterns = [
+            r"(?:正文|内容|文章内容|body|content)\s*(?:是|为|:|：|=)?\s*['\"“”‘’]?(.+)$",
+        ]
+
+        title = None
+        for pattern in title_patterns:
+            match = re.search(pattern, task, re.IGNORECASE | re.DOTALL)
+            if match:
+                title = clean(match.group(1))
+                break
+
+        body = None
+        for pattern in body_patterns:
+            match = re.search(pattern, task, re.IGNORECASE | re.DOTALL)
+            if match:
+                body = clean(match.group(1))
+                break
+
+        return title, body
+
+    @staticmethod
+    def _extract_comment_text(task: str) -> str | None:
+        """从任务描述中提取评论文本。"""
+        import re
+
+        def clean(value: str | None) -> str | None:
+            if not value:
+                return None
+            text = value.strip().strip("'\"`""''").rstrip("，,；;。 \n\r\t")
+            return text or None
+
+        comment_patterns = [
+            r"(?:评论|留言|回复|说|内容)\s*(?:是|为|:|：|=)?\s*['\"“”‘’]?(.+?)(?=(?:在|然后|并且|接着)|$)",
+            r"['\"“”‘’](.+?)['\"“”‘’]\s*(?:的评论|评论|留言)",
+            r"发布评论['\"“”‘’]?(.+?)(?:\s|$)",
+        ]
+
+        for pattern in comment_patterns:
+            match = re.search(pattern, task, re.IGNORECASE | re.DOTALL)
+            if match:
+                comment = clean(match.group(1))
+                if comment and len(comment) >= 1:
+                    return comment
+        return None
+
+    @staticmethod
+    def _extract_video_url(task: str) -> str | None:
+        """从任务描述中提取视频URL。"""
+        import re
+
+        # 直接匹配 bilibili 视频 URL，排除中文标点和常见分隔符
+        match = re.search(
+            r"(https?://[^\s<>\"]+bilibili\.com/video/[A-Za-z0-9?=&_\-/%#]+)",
+            task,
+            re.IGNORECASE
+        )
+        if match:
+            url = match.group(1)
+            return url
+
+        # 回退：尝试匹配任何以 BV 开头的视频链接
+        match = re.search(r"(https?://[^\s]+/video/BV[A-Za-z0-9]+)", task, re.IGNORECASE)
+        if match:
+            url = match.group(1)
+            # 清理 URL 末尾的标点
+            url = re.sub(r"[.,;:，。；：！!?）)>]+$", "", url)
+            return url
+
         return None
 
     def _select_best_skill(self, skills: list[Any], task: str) -> Any:

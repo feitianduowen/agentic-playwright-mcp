@@ -1,0 +1,82 @@
+id: bilibili_publish
+name: Bilibili 文章投稿
+type: domain
+description: 完成 Bilibili 短信登录后进入文章投稿页，填写标题和正文并点击发布。
+version: "1.0.0"
+
+triggers:
+  - bilibili
+  - B站
+  - b站
+  - 哔哩哔哩
+  - 哔哩
+  - 投稿
+  - 发布
+  - 文章
+  - 专栏
+  - 正文
+  - 标题
+
+url_patterns:
+  - bilibili.com
+  - "*.bilibili.com"
+  - member.bilibili.com
+
+domain: bilibili
+
+parameters:
+  phone_number:
+    type: string
+    required: true
+    description: 用户手机号，例如 13574133406。
+  title:
+    type: string
+    required: true
+    description: 投稿文章标题。
+  body:
+    type: string
+    required: true
+    description: 投稿文章正文。
+  upload_url:
+    type: string
+    required: false
+    default: "https://member.bilibili.com/platform/upload/text/new-article"
+    description: Bilibili 文章投稿页 URL。
+
+steps:
+  - action: goto
+    args:
+      url: "https://www.bilibili.com"
+    comment: 打开 Bilibili 首页并完成短信登录
+
+  - action: smart_click
+    target: login_button
+    comment: 点击右上角“登录”图标
+    on_error: continue
+
+  - action: smart_click
+    target: sms_login
+    comment: 切换到短信登录并等待用户完成人机认证和短信登录
+    on_error: continue
+
+  - action: goto
+    args:
+      url: "{{upload_url}}"
+    comment: 进入 Bilibili 文章投稿页
+
+  - action: smart_fill
+    target: article_title
+    value: "{{title}}"
+    comment: 填写文章标题
+    on_error: stop
+
+  - action: smart_fill
+    target: article_body
+    value: "{{body}}"
+    comment: 填写文章正文
+    on_error: stop
+
+  - action: smart_click
+    target: publish_button
+    comment: 点击右下角蓝色“发布”按钮
+    on_error: stop

@@ -1,4 +1,4 @@
-# Contributing Guide
+﻿# Contributing Guide
 
 ## Quick Start
 
@@ -90,12 +90,12 @@ examples/
 ### Option 1: Declarative YAML (Simple)
 
 1. Create `skills/<name>.yaml` with metadata (triggers, url_patterns, etc.)
-2. Create `src/skill_library/domains/<name>.py` with a `run()` function
+2. Create `src/skill_library/<category>/<name>.py` with a `run()` function
 3. Skills are auto-discovered from `skills.yaml`
 
 ### Option 2: SkillBase Class (Advanced)
 
-1. Create a class inheriting from `SkillBase` in `src/skill_library/domains/`
+1. Create a class inheriting from `SkillBase` in `src/skill_library/search/`
 2. Implement `execute(self, page, context) -> SkillResult`
 3. Register in `skills.yaml` with `entry: MySkillClass`
 

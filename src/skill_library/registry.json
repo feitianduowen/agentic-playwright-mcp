@@ -11,6 +11,46 @@
       "description": "在百度搜索关键词并返回结果"
     },
     {
+      "id": "bilibili_search",
+      "name": "Bilibili 搜索",
+      "type": "domain",
+      "triggers": ["bilibili", "B站", "b站", "哔哩哔哩", "哔哩", "视频", "搜索", "search"],
+      "url_patterns": ["bilibili.com", "search.bilibili.com"],
+      "file": "search/bilibili_search.py",
+      "function": "run",
+      "description": "在 Bilibili 搜索视频、番剧、用户和相关内容"
+    },
+    {
+      "id": "bilibili_login",
+      "name": "Bilibili 短信登录",
+      "type": "domain",
+      "triggers": ["bilibili", "B站", "b站", "哔哩哔哩", "哔哩", "登录", "login", "短信登录", "验证码"],
+      "url_patterns": ["bilibili.com", "*.bilibili.com"],
+      "file": "others/bilibili_login.py",
+      "function": "run",
+      "description": "打开 Bilibili 登录弹窗，切换短信登录，填写手机号并发送验证码"
+    },
+    {
+      "id": "bilibili_publish",
+      "name": "Bilibili 文章投稿",
+      "type": "domain",
+      "triggers": ["bilibili", "B站", "b站", "哔哩哔哩", "哔哩", "投稿", "文章", "专栏", "正文", "标题"],
+      "url_patterns": ["bilibili.com", "*.bilibili.com", "member.bilibili.com"],
+      "file": "send/bilibili_publish.py",
+      "function": "run",
+      "description": "完成 Bilibili 短信登录后进入文章投稿页，填写标题和正文并点击发布"
+    },
+    {
+      "id": "bilibili_comment",
+      "name": "Bilibili 视频评论",
+      "type": "domain",
+      "triggers": ["bilibili", "B站", "b站", "哔哩哔哩", "哔哩", "评论", "留言", "回复", "讨论", "发评论", "发布评论", "视频评论", "视频留言"],
+      "url_patterns": ["bilibili.com", "*.bilibili.com", "bilibili.com/video/"],
+      "file": "comment/bilibili_comment.py",
+      "function": "run",
+      "description": "完成 Bilibili 短信登录后进入视频页面，填写评论内容并点击发送"
+    },
+    {
       "id": "github_login",
       "name": "GitHub 登录",
       "type": "domain",

@@ -319,9 +319,17 @@ _instance: SkillRegistry | None = None
 
 
 def get_skill_registry(library_dir: str | Path | None = None) -> SkillRegistry:
-    """获取全局单例 SkillRegistry。"""
+    """获取全局单例 SkillRegistry。
+
+    Args:
+        library_dir: 技能库目录路径。若为 None 且单例未初始化，则使用默认路径。
+    """
     global _instance
     if _instance is None:
+        # 如果没有提供 library_dir，使用默认路径
+        if library_dir is None:
+            # 默认使用项目根目录下的 src/skill_library
+            library_dir = Path(__file__).parent.parent / "skill_library"
         _instance = SkillRegistry(library_dir=library_dir)
         # 自动加载 skills.yaml
         _instance.load_from_yaml()
