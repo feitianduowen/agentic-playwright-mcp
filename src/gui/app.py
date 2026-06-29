@@ -18,7 +18,6 @@ from __future__ import annotations
 import os
 import re
 import sys
-import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -122,7 +121,9 @@ SITE_LOGIN_COOKIES = {
 
 def _storage_state_has_session(state: dict, domain: str | None = None) -> bool:
     """Heuristic: decide whether current context contains save-worthy state."""
-    cookie_names = {str(cookie.get("name", "")).lower() for cookie in state.get("cookies", [])}
+    cookie_names = {
+        str(cookie.get("name", "")).lower() for cookie in state.get("cookies", [])
+    }
     site_cookie_names = SITE_LOGIN_COOKIES.get((domain or "").lower())
     if site_cookie_names is not None:
         return any(name.lower() in cookie_names for name in site_cookie_names)
@@ -151,6 +152,7 @@ def _storage_state_has_session(state: dict, domain: str | None = None) -> bool:
                 return True
 
     return False
+
 
 # HTML 模板
 HTML_TEMPLATE = """
@@ -858,6 +860,7 @@ def api_auth_current():
             _active_bm = None
             try:
                 from src.core.browser_manager import reset_browser_manager
+
                 reset_browser_manager()
             except Exception:
                 pass
@@ -873,6 +876,7 @@ def api_auth_current():
             _active_bm = None
             try:
                 from src.core.browser_manager import reset_browser_manager
+
                 reset_browser_manager()
             except Exception:
                 pass
@@ -901,6 +905,7 @@ def api_auth_current():
             _active_bm = None
             try:
                 from src.core.browser_manager import reset_browser_manager
+
                 reset_browser_manager()
             except Exception:
                 pass
@@ -954,6 +959,7 @@ def api_close_browser():
             _close_requested = False
             try:
                 from src.core.browser_manager import reset_browser_manager
+
                 reset_browser_manager()
             except Exception:
                 pass
