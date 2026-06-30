@@ -37,3 +37,32 @@ workspace/
 # OS files
 .DS_Store
 Thumbs.db
+
+# MCP local config
+.mcp.json
+
+# Agent skill symlinks (point to .agents/skills/)
+skills/brandkit
+skills/design-taste-frontend
+skills/design-taste-frontend-v1
+skills/full-output-enforcement
+skills/gpt-taste
+skills/high-end-visual-design
+skills/image-to-code
+skills/imagegen-frontend-mobile
+skills/imagegen-frontend-web
+skills/industrial-brutalist-ui
+skills/minimalist-ui
+skills/redesign-existing-projects
+skills/stitch-design-taste
+
+# IDE / tool configs
+.agents/
+.claude/
+.cursor/
+.gemini/
+.kiro/
+.qoder/
+.vscode/
+.opencode.json
+skills-lock.json
