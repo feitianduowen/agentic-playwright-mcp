@@ -83,7 +83,7 @@ class SkillRouter:
 
         Args:
             library_dir: 技能库目录（包含 skills.yaml 和源码）。
-            llm_caller: LLM 调用器，需提供 .call(prompt) -> str 方法。
+            llm_caller: LLM 调用器，需提供 .call_json(prompt, schema=...) -> dict 方法。
                         若为 None，禁用 LLM 精排。
         """
         self._library_dir = Path(library_dir) if library_dir else None
@@ -339,13 +339,57 @@ class SkillRouter:
             candidate_list.append(entry)
 
         prompt = self._build_rank_prompt(task, candidate_list, page_context)
+        schema = {
+            "type": "object",
+            "properties": {
+                "skill_id": {"type": "string"},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "reason": {"type": "string"},
+            },
+            "required": ["skill_id", "confidence"],
+        }
 
         try:
-            raw = self._llm_caller.call(prompt)
-            return self._parse_rank_response(raw, candidates)
+            data = self._llm_caller.call_json(
+                prompt,
+                schema=schema,
+                system_prompt="你是任务路由器。根据用户输入，从候选 skill 中选最匹配的一个。",
+            )
         except Exception as exc:
             logger.warning("LLM 精排失败: %s", exc)
             return None
+
+        chosen_id = data.get("skill_id", "")
+        try:
+            confidence = float(data.get("confidence", 0) or 0)
+        except (TypeError, ValueError):
+            logger.warning("LLM 精排返回非法 confidence: %s", data.get("confidence"))
+            return None
+        reason = data.get("reason", "")
+
+        if confidence < 0.5:
+            logger.info("LLM 精排置信度过低 (%.2f)，忽略", confidence)
+            return None
+
+        candidate_map = {s.id: s for s, _ in candidates}
+        chosen_skill = candidate_map.get(chosen_id)
+        if not chosen_skill:
+            logger.warning("LLM 精排返回未知技能 ID: %s", chosen_id)
+            return None
+
+        logger.info(
+            "LLM 精排选择: %s (confidence=%.2f, reason=%s)",
+            chosen_id,
+            confidence,
+            reason,
+        )
+
+        return SkillDecision(
+            skill=chosen_skill,
+            confidence=confidence,
+            reason=reason,
+            source="llm",
+        )
 
     def _build_rank_prompt(
         self,
@@ -369,64 +413,9 @@ class SkillRouter:
 候选 skills:
 {candidates_json}
 
-返回 JSON:
-{{"skill_id": "选中的技能id", "confidence": 0.0-1.0, "reason": "选择原因"}}
-
 规则:
 1. 优先匹配用户明确提到的站点和操作
-2. 如果没有明确匹配，confidence 设为 0.3 以下
-3. 只返回 JSON，不要其他文字"""
-
-    def _parse_rank_response(
-        self,
-        raw: str,
-        candidates: List[tuple[SkillRouterInfo, float]],
-    ) -> Optional[SkillDecision]:
-        """解析 LLM 精排响应。"""
-        text = raw.strip()
-
-        # 提取 JSON 块
-        if "```" in text:
-            start = text.find("{")
-            end = text.rfind("}") + 1
-            if start != -1 and end > 0:
-                text = text[start:end]
-
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            logger.warning("LLM 精排返回非 JSON: %s", raw[:200])
-            return None
-
-        chosen_id = data.get("skill_id", "")
-        confidence = float(data.get("confidence", 0))
-        reason = data.get("reason", "")
-
-        if confidence < 0.5:
-            logger.info("LLM 精排置信度过低 (%.2f)，忽略", confidence)
-            return None
-
-        # 查找对应的候选
-        candidate_map = {s.id: s for s, _ in candidates}
-        chosen_skill = candidate_map.get(chosen_id)
-
-        if not chosen_skill:
-            logger.warning("LLM 精排返回未知技能 ID: %s", chosen_id)
-            return None
-
-        logger.info(
-            "LLM 精排选择: %s (confidence=%.2f, reason=%s)",
-            chosen_id,
-            confidence,
-            reason,
-        )
-
-        return SkillDecision(
-            skill=chosen_skill,
-            confidence=confidence,
-            reason=reason,
-            source="llm",
-        )
+2. 如果没有明确匹配，confidence 设为 0.3 以下"""
 
     # -------------------------------------------------------------------
     # 脚本构建
@@ -531,23 +520,33 @@ class SkillRouter:
             f"Selected skill:\n{json.dumps(skill_meta, ensure_ascii=False, indent=2)}\n\n"
             f"Declared parameters:\n{json.dumps(params_meta, ensure_ascii=False, indent=2)}\n\n"
             f"Values already found by rules:\n{json.dumps(rule_values, ensure_ascii=False, indent=2)}\n\n"
-            "Return one JSON object whose keys are exactly the declared parameter names.\n"
             "Rules:\n"
             "- If a value is clearly present in the user task, return that value as a string.\n"
             "- If a value cannot be found, return \"-1\" for that key.\n"
             "- Do not invent titles, comments, article bodies, phone numbers, or URLs.\n"
-            "- Do not return markdown or any text outside JSON.\n"
         )
 
+        schema = {
+            "type": "object",
+            "properties": {
+                param_name: {"type": ["string", "number", "boolean", "null"]}
+                for param_name in skill.params
+            },
+            "required": list(skill.params),
+        }
+
         try:
-            raw = self._llm_caller.call(prompt)
-            data = self._parse_json_object(raw)
+            data = self._llm_caller.call_json(
+                prompt,
+                schema=schema,
+                system_prompt="You extract declared browser automation parameters and return only structured values.",
+            )
         except Exception as exc:
             logger.warning("LLM param extraction failed: %s", exc)
             return {}
 
-        if not data:
-            logger.warning("LLM param extraction returned non-JSON")
+        if not isinstance(data, dict):
+            logger.warning("LLM param extraction returned non-object")
             return {}
 
         extracted: Dict[str, str] = {}
@@ -562,32 +561,6 @@ class SkillRouter:
                 value = "-1"
             extracted[param_name] = value
         return extracted
-
-    @staticmethod
-    def _parse_json_object(raw: str) -> Optional[Dict[str, Any]]:
-        """Parse a JSON object from raw LLM text, including fenced output."""
-        text = raw.strip()
-        if "```" in text:
-            start = text.find("{")
-            end = text.rfind("}") + 1
-            if start != -1 and end > start:
-                text = text[start:end]
-
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            start = text.find("{")
-            end = text.rfind("}") + 1
-            if start == -1 or end <= start:
-                return None
-            try:
-                parsed = json.loads(text[start:end])
-            except json.JSONDecodeError:
-                return None
-
-        if not isinstance(parsed, dict):
-            return None
-        return parsed
 
     @staticmethod
     def _extract_param(
