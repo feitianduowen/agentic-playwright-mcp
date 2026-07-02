@@ -1020,7 +1020,9 @@ class TestVisionFallback:
             result = agent.run("点击搜索按钮")
 
         # Should have tried vision fallback
-        assert any("视觉" in s.result for s in result.steps)
+        assert result.success is True
+        mock_vision.analyze_page.assert_called_once()
+        assert any("视觉 fallback 执行成功" in s.result for s in result.steps)
 
     def test_no_vision_module(self, mock_browser, mock_registry):
         """Should handle missing vision module gracefully."""
@@ -1037,10 +1039,48 @@ class TestVisionFallback:
                 mock_get.return_value = engine
 
                 agent = AgentLoop(max_steps=3)
-                result = agent.run("测试")
+                result = agent.run("点击搜索按钮")
 
         # Should fail but not crash
         assert result.success is False
+        assert any("VisionModule 未配置" in s.result for s in result.steps)
+
+    def test_heal_with_vision_coordinate_fallback(self, mock_browser, mock_registry):
+        """Should click coordinates when vision returns no selector."""
+        from src.core.script_engine import ScriptResult
+        from src.core.vision import ElementInfo, PageAnalysis
+
+        with patch("src.core.agent_loop.get_vision_module") as mock_get_vision:
+            vision = MagicMock()
+            vision.analyze_page.return_value = PageAnalysis(
+                summary="测试页面",
+                elements=[
+                    ElementInfo(
+                        description="搜索按钮",
+                        x=100,
+                        y=200,
+                        width=80,
+                        height=30,
+                        confidence=0.9,
+                    )
+                ],
+            )
+            mock_get_vision.return_value = vision
+
+            with patch("src.core.agent_loop.get_script_engine") as mock_get_engine:
+                engine = MagicMock()
+                engine.execute.return_value = ScriptResult(
+                    success=False, error="选择器不可用"
+                )
+                mock_get_engine.return_value = engine
+
+                agent = AgentLoop(max_steps=5)
+                result = agent.run("点击搜索按钮")
+
+        _, page = mock_browser
+        assert result.success is True
+        page.mouse.click.assert_called_once_with(140, 215)
+        assert any("视觉 fallback 坐标点击成功" in s.result for s in result.steps)
 
 
 # ---------------------------------------------------------------------------
