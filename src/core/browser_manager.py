@@ -249,6 +249,63 @@ class BrowserManager:
             raise RuntimeError("浏览器尚未启动，请先调用 launch() 方法。")
         return self._page
 
+    def new_tab(self) -> Page:
+        """在同一浏览器上下文中打开新标签页，返回新 Page。
+
+        面板通过 context.addInitScript 自动注入到新标签页，无需额外处理。
+
+        Returns:
+            新创建的 Page 实例。
+
+        Raises:
+            RuntimeError: 浏览器尚未启动时抛出。
+        """
+        if self._context is None:
+            raise RuntimeError("浏览器尚未启动，请先调用 launch() 方法。")
+        page = self._context.new_page()
+        logger.info("New tab opened: %s", page.url)
+        return page
+
+    def switch_page(self, page: Page) -> None:
+        """切换当前活跃页面。
+
+        后续 get_page() 将返回此 page。
+
+        Args:
+            page: 要切换到的 Page 实例。
+        """
+        self._page = page
+        logger.info("Switched to tab: %s", page.url)
+
+    def close_tab(self, page: Page) -> None:
+        """关闭指定标签页。
+
+        如果关闭的是当前活跃页，会自动切换到同 context 下的其他页面。
+        如果没有剩余页面，当前页指针设为 None。
+
+        Args:
+            page: 要关闭的 Page 实例。
+        """
+        is_current = page is self._page
+        try:
+            page.close()
+            logger.info("Tab closed: %s", page.url)
+        except Exception as exc:
+            logger.warning("Error closing tab: %s", exc)
+
+        if is_current:
+            # 尝试切换到 context 中的其他页面
+            if self._context is not None:
+                remaining = [
+                    p for p in self._context.pages if not p.is_closed()
+                ]
+                if remaining:
+                    self._page = remaining[-1]
+                    logger.info("Auto-switched to tab: %s", self._page.url)
+                    return
+            self._page = None
+            logger.info("No remaining tabs, page pointer set to None")
+
     def close(self) -> None:
         """关闭浏览器和 Playwright 实例。安全处理已关闭的情况。"""
         bus = get_event_bus()

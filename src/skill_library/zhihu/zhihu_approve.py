@@ -22,4 +22,3 @@ def run(keyword: str):
     wait(2)
 
     log(f"finish approve")
-    close_browser()
