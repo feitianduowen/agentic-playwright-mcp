@@ -21,6 +21,7 @@ Agent 循环引擎 —— 自然语言驱动的自主浏览器操作。
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -46,9 +47,8 @@ from src.core.llm_utils import chat_json_with_retry
 from src.core.script_engine import get_script_engine
 from src.core.script_generator import ScriptGenerator
 from src.core.skill_router import SkillDecision, SkillRouter, get_skill_router
-from src.core.task_splitter import TaskSplitter, get_task_splitter
-from src.core.vision import get_vision_module
-# from src.core.vision import VisionModule, get_vision_module  # 暂时禁用
+from src.core.task_splitter import TaskGroup, TaskSplitter, get_task_splitter
+from src.core.vision import VisionModule, get_vision_module
 from src.layer_2.controls import get_controls_exports
 from src.logging import bind_context, get_logger, log_timing
 from src.skill_library.registry import SkillRegistry, get_skill_registry
@@ -175,11 +175,15 @@ class AgentLoop:
     def run(self, task: str) -> AgentTaskResult:
         """执行一个自然语言任务。
 
-        支持多命令拆分：用户输入用句号分隔的多个命令时，自动拆分并顺序执行。
+        支持两种任务模式：
+        - 独立任务（`。`/连接词分隔）→ 每个任务开新标签页
+        - 连续任务（`;` 分隔）→ 同一标签页下快速顺序执行
 
         Args:
             task: 用户的任务描述，如"帮我在百度搜索 Python 教程"。
-                  支持多命令: "打开百度。搜索Python教程。截个图"。
+                  多任务: "打开百度。搜索Python教程。截个图"。
+                  连续任务: "打开百度;输入Python;点搜索"。
+                  混合: "打开百度。搜索Python；点第一个结果。打开GitHub"。
 
         Returns:
             AgentTaskResult 包含执行步骤、结果和输出。
@@ -187,35 +191,57 @@ class AgentLoop:
         # 初始化模块（确保 TaskSplitter 可用）
         self._init_modules()
 
-        # 拆分任务
-        sub_tasks = self._task_splitter.split(task)  # type: ignore[union-attr]
+        # 拆分任务为分组
+        groups = self._task_splitter.split(task)  # type: ignore[union-attr]
 
-        # 单命令 → 走原逻辑（零开销）
-        if len(sub_tasks) <= 1:
-            return self._run_single(task)
+        # 单组单任务 → 走原逻辑（零开销）
+        if len(groups) == 1 and len(groups[0].tasks) == 1:
+            return self._run_single(groups[0].tasks[0])
 
-        # 多命令 → 顺序执行
-        logger.info("Multi-command detected: %d sub-tasks", len(sub_tasks))
-        return self._run_multi(sub_tasks)
+        # 多组/连续任务 → 分组执行
+        total_tasks = sum(len(g.tasks) for g in groups)
+        logger.info(
+            "Multi-command detected: %d groups, %d total tasks",
+            len(groups),
+            total_tasks,
+        )
+        return self._run_groups(groups)
 
-    def _run_multi(self, sub_tasks: list[str]) -> AgentTaskResult:
-        """顺序执行多个子任务，共享浏览器实例，合并结果。"""
+    def _run_groups(self, groups: list[TaskGroup]) -> AgentTaskResult:
+        """按分组执行任务：独立任务开新标签页，连续任务同标签页顺序执行。"""
         combined = AgentTaskResult(
             success=True,
-            task=" | ".join(sub_tasks),
-            sub_tasks=sub_tasks,
+            task=" | ".join(
+                "; ".join(g.tasks) if g.sequential else " | ".join(g.tasks)
+                for g in groups
+            ),
+            sub_tasks=[t for g in groups for t in g.tasks],
         )
 
-        for i, sub_task in enumerate(sub_tasks):
-            logger.info("Running sub-task %d/%d: %s", i + 1, len(sub_tasks), sub_task)
-            sub_result = self._run_single(sub_task)
-            combined.sub_results.append(sub_result)
-            combined.steps.extend(sub_result.steps)
+        task_idx = 0
+        for group in groups:
+            if group.sequential:
+                logger.info(
+                    "Running sequential group (%d tasks): %s",
+                    len(group.tasks),
+                    "; ".join(group.tasks),
+                )
+                result = self._run_sequential(group.tasks, task_idx)
+            else:
+                logger.info(
+                    "Running parallel group (%d tasks, new tabs): %s",
+                    len(group.tasks),
+                    " | ".join(group.tasks),
+                )
+                result = self._run_in_new_tabs(group.tasks, task_idx)
 
-            if not sub_result.success:
+            combined.sub_results.extend(result.sub_results)
+            combined.steps.extend(result.steps)
+            task_idx += len(group.tasks)
+
+            if not result.success:
                 combined.success = False
-                combined.error = f"子任务 {i + 1}/{len(sub_tasks)} 失败: {sub_task}"
-                logger.warning("Sub-task %d failed: %s", i + 1, sub_task)
+                combined.error = result.error
                 break
 
         # 汇总最终 URL
@@ -230,7 +256,7 @@ class AgentLoop:
         outputs = []
         for i, sub_result in enumerate(combined.sub_results):
             status = "✓" if sub_result.success else "✗"
-            outputs.append(f"[{status}] 子任务 {i + 1}: {sub_tasks[i]}")
+            outputs.append(f"[{status}] 子任务 {i + 1}: {combined.sub_tasks[i]}")
             if sub_result.output:
                 outputs.append(f"  {sub_result.output}")
         combined.output = "\n".join(outputs)
@@ -239,8 +265,99 @@ class AgentLoop:
             "Multi-command finished: success=%s sub_tasks=%d/%d",
             combined.success,
             sum(1 for r in combined.sub_results if r.success),
-            len(sub_tasks),
+            len(combined.sub_tasks),
         )
+        return combined
+
+    def _run_in_new_tabs(
+        self, tasks: list[str], offset: int = 0
+    ) -> AgentTaskResult:
+        """每个任务在新标签页中执行。
+
+        Args:
+            tasks: 子任务列表。
+            offset: 全局子任务编号偏移（用于日志）。
+        """
+        combined = AgentTaskResult(
+            success=True,
+            task=" | ".join(tasks),
+            sub_tasks=tasks,
+        )
+
+        for i, task in enumerate(tasks):
+            global_idx = offset + i + 1
+            logger.info(
+                "New tab for task %d: %s", global_idx, task
+            )
+
+            # 确保浏览器可用
+            bm = get_browser_manager()
+            if not bm.is_alive():
+                logger.info("Browser not alive, relaunching...")
+                bm.launch()
+
+            new_page = bm.new_tab()
+            bm.switch_page(new_page)
+            sub_result = self._run_single(task)
+            combined.sub_results.append(sub_result)
+            combined.steps.extend(sub_result.steps)
+
+            if not sub_result.success:
+                combined.success = False
+                combined.error = (
+                    f"子任务 {global_idx} 失败: {task}"
+                )
+                logger.warning(
+                    "Task %d failed in new tab: %s", global_idx, task
+                )
+                break
+
+        return combined
+
+    def _run_sequential(
+        self, tasks: list[str], offset: int = 0
+    ) -> AgentTaskResult:
+        """同一标签页内快速顺序执行多个微操作。
+
+        Args:
+            tasks: 子任务列表。
+            offset: 全局子任务编号偏移（用于日志）。
+        """
+        combined = AgentTaskResult(
+            success=True,
+            task="; ".join(tasks),
+            sub_tasks=tasks,
+        )
+
+        for i, task in enumerate(tasks):
+            global_idx = offset + i + 1
+            logger.info(
+                "Sequential task %d/%d: %s",
+                global_idx,
+                offset + len(tasks),
+                task,
+            )
+
+            # 确保浏览器可用（前一个任务可能导致浏览器断开）
+            bm = get_browser_manager()
+            if not bm.is_alive():
+                logger.info("Browser not alive between sequential tasks, relaunching...")
+                bm.launch()
+
+            sub_result = self._run_single(task)
+            combined.sub_results.append(sub_result)
+            combined.steps.extend(sub_result.steps)
+
+            if not sub_result.success:
+                combined.success = False
+                combined.error = (
+                    f"连续任务 {global_idx} 失败: {task}"
+                )
+                logger.warning(
+                    "Sequential task %d failed: %s", global_idx, task
+                )
+                break
+
         return combined
 
     def _run_single(self, task: str) -> AgentTaskResult:
@@ -659,11 +776,144 @@ class AgentLoop:
         """
         return self._script_generator.generate(task, page_summary)
 
-    def _extract_site(self, url: str) -> str:
-        if email_match and password_match:
+    @staticmethod
+    def _extract_login_credentials(task: str) -> tuple[str | None, str | None]:
+        """Compatibility helper for legacy domain login script tests."""
+        import re
+
+        username = None
+        password = None
+        username_match = re.search(
+            r"(?:username|user|用户名|账号)\s*(?:是|为|:|：|=)?\s*([^\s,，;；]+)",
+            task,
+            re.IGNORECASE,
+        )
+        if username_match:
+            username = username_match.group(1).strip().strip("'\"`“”‘’")
+
+        password_match = re.search(
+            r"(?:password|pass|密码|口令)\s*(?:是|为|:|：|=)?\s*([^\s,，;；。)）]+)",
+            task,
+            re.IGNORECASE,
+        )
+        if password_match:
+            password = password_match.group(1).strip().strip("'\"`“”‘’")
+
+        return username, password
+
+    @staticmethod
+    def _extract_gmail_credentials(task: str) -> tuple[str | None, str | None]:
+        """Compatibility helper for Gmail login commands."""
+        import re
+
+        email = None
+        email_match = re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", task, re.I)
+        if email_match:
+            email = email_match.group(0).strip()
+
+        password = None
+        password_match = re.search(
+            r"(?:密码|口令|password|pass)[^A-Za-z0-9@]{0,16}([^\s,，;；。)）]+)",
+            task,
+            re.IGNORECASE,
+        )
+        if password_match:
             password = password_match.group(1).strip().strip("'\"`“”‘’()（）")
-            return email_match.group(1), password
-        return AgentLoop._extract_login_credentials(task)
+
+        return email, password
+
+    def _build_skill_script(self, source_code: str, task: str, skill_id: str) -> str:
+        """Legacy script builder kept for older tests and external callers."""
+        import json as _json
+
+        def q(value: str | None) -> str:
+            return _json.dumps(value or "", ensure_ascii=False)
+
+        def append(call: str) -> str:
+            return f"{source_code}\n\n# 自动调用\n{call}"
+
+        if skill_id == "domain/github_login":
+            username, password = self._extract_login_credentials(task)
+            return append(f"run({q(username)}, {q(password)})")
+
+        if skill_id == "domain/gmail_login":
+            email, password = self._extract_gmail_credentials(task)
+            return append(f"run({q(email)}, {q(password)})")
+
+        if skill_id == "domain/gmail_send":
+            recipient, subject, body = self._extract_gmail_send_fields(task)
+            sender_email, password = self._extract_gmail_send_account(task)
+            kwargs = []
+            if sender_email:
+                kwargs.append(f"sender_email={q(sender_email)}")
+            if password:
+                kwargs.append(f"password={q(password)}")
+            args = [q(recipient), q(subject), q(body), *kwargs]
+            return append(f"run({', '.join(args)})")
+
+        if skill_id in {
+            "domain/xiaohongshu_login",
+            "domain/douyin_login",
+            "domain/bilibili_login",
+        }:
+            return append(f"run({q(self._extract_phone_number(task))})")
+
+        if skill_id == "domain/xiaohongshu_publish":
+            image_path = self._extract_xiaohongshu_media_path(task, "image")
+            video_path = self._extract_xiaohongshu_media_path(task, "video")
+            mode = self._extract_xiaohongshu_publish_mode(task, image_path, video_path)
+            title, body = self._extract_xiaohongshu_publish_fields(task)
+            content = body or self._extract_xiaohongshu_publish_content(task) or title
+            phone = self._extract_phone_number(task)
+            cover_style = self._extract_xiaohongshu_cover_style(task)
+            enable_schedule, schedule_time = self._extract_xiaohongshu_schedule(task)
+
+            args = [q(content)]
+            kwargs = [f"mode={q(mode)}"]
+            if phone:
+                kwargs.append(f"phone_number={q(phone)}")
+            if image_path:
+                kwargs.append(f"image_path={q(image_path)}")
+            if video_path:
+                kwargs.append(f"video_path={q(video_path)}")
+            if title:
+                kwargs.append(f"title={q(title)}")
+            if body and body != content:
+                kwargs.append(f"body={q(body)}")
+            if cover_style:
+                kwargs.append(f"cover_style={q(cover_style)}")
+            if enable_schedule:
+                kwargs.append("enable_schedule=True")
+            if schedule_time:
+                kwargs.append(f"schedule_time={q(schedule_time)}")
+            return append(f"run({', '.join([*args, *kwargs])})")
+
+        if skill_id == "domain/xiaohongshu_comment":
+            comment = self._extract_comment_text(task)
+            note_url = self._extract_xiaohongshu_note_url(task)
+            args = [q(comment)]
+            if note_url:
+                args.append(f"note_url={q(note_url)}")
+            return append(f"run({', '.join(args)})")
+
+        if skill_id == "domain/bilibili_publish":
+            title, body = self._extract_bilibili_publish_fields(task)
+            phone = self._extract_phone_number(task)
+            return append(f"run({q(phone)}, {q(title)}, {q(body)})")
+
+        if skill_id == "domain/bilibili_comment":
+            phone = self._extract_phone_number(task)
+            comment = self._extract_comment_text(task)
+            video_url = self._extract_video_url(task)
+            args = [q(phone), q(comment)]
+            if video_url:
+                args.append(f"video_url={q(video_url)}")
+            return append(f"run({', '.join(args)})")
+
+        skill = self._skill_router.get_skill(skill_id)
+        if skill and skill.params:
+            return self._skill_router._build_parametrized_script(source_code, skill, task)
+        return self._skill_router._build_keyword_script(source_code, task)
 
     @staticmethod
     def _extract_gmail_send_fields(task: str) -> tuple[str | None, str | None, str | None]:

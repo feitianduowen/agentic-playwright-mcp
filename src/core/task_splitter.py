@@ -1,27 +1,43 @@
 """
-任务拆分器 —— 将用户的一句复合指令拆分为多个独立子任务。
+任务拆分器 —— 将用户的一句复合指令拆分为多个子任务组。
 
-拆分策略（两级）：
+拆分策略（三级）：
+0. 分号拆分：按 `;` 拆分为"连续任务"（同一标签页顺序执行）
 1. 规则拆分：按中文句号 `。` / 英文句号 `.` 拆分（零成本）
-2. LLM 拆分：处理 "然后"、"接着"、"并且" 等连接词（可选）
+2. 连接词拆分：处理 "然后"、"接着"、"并且" 等连接词
+3. LLM 拆分：兜底（可选）
 
-边界处理：
-- URL 中的点号不拆分
-- 引号内的句号不拆分
-- 省略号不拆分
+两种任务模式：
+- 独立任务（`。`/连接词分隔）→ 每个任务开新标签页
+- 连续任务（`;` 分隔）→ 同一标签页下快速顺序执行
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class TaskGroup:
+    """一组子任务。
+
+    Attributes:
+        tasks: 该组内的子任务列表。
+        sequential: True 表示同一标签页顺序执行（; 分隔），
+                    False 表示每个任务应开独立标签页。
+    """
+
+    tasks: list[str]
+    sequential: bool = False
+
+
 class TaskSplitter:
-    """将用户输入拆分为多个独立子任务。"""
+    """将用户输入拆分为多个 TaskGroup。"""
 
     # 连接词模式（中文 + 英文）
     _CONNECTOR_PATTERN = re.compile(
@@ -38,44 +54,126 @@ class TaskSplitter:
         """
         self._llm_caller = llm_caller
 
-    def split(self, task: str) -> List[str]:
-        """拆分任务，返回子任务列表。
+    def split(self, task: str) -> List[TaskGroup]:
+        """拆分任务，返回 TaskGroup 列表。
 
-        始终返回至少一个元素。如果无法拆分，返回 [原始任务]。
+        拆分语义：
+        - 句号（。/ .）是顶级分隔符 → 独立任务组（每个开新标签页）
+        - 分号（; / ；）是次级分隔符 → 连续任务组（同标签页顺序执行）
+        - 连接词（然后、接着 等）等同于句号 → 独立任务组
+
+        示例：
+        - "打开百度。搜索Python" → 2个独立组
+        - "打开百度;输入Python;点搜索" → 1个连续组(3任务)
+        - "打开百度。搜索Python；点第一个结果。打开GitHub" → 3组(独立+连续+独立)
 
         Args:
             task: 用户的原始输入。
 
         Returns:
-            子任务列表（去除空串和纯标点）。
+            TaskGroup 列表。
         """
         task = task.strip()
         if not task:
-            return [task]
+            return [TaskGroup(tasks=[task])]
 
-        # L1: 规则拆分
-        sub_tasks = self._rule_split(task)
+        # L1: 按句号拆分为顶级段（每段是独立任务组）
+        top_segments = self._rule_split(task)
 
-        # 规则拆分出多个 → 直接返回
-        if len(sub_tasks) > 1:
-            logger.info("Rule split: %d sub-tasks", len(sub_tasks))
-            return sub_tasks
+        # 如果句号只拆出1个，尝试连接词拆分
+        if len(top_segments) <= 1:
+            connector_tasks = self._connector_split(task)
+            if len(connector_tasks) > 1:
+                top_segments = connector_tasks
 
-        # L2: 规则只拆出 1 个 → 尝试连接词拆分
-        connector_tasks = self._connector_split(task)
-        if len(connector_tasks) > 1:
-            logger.info("Connector split: %d sub-tasks", len(connector_tasks))
-            return connector_tasks
-
-        # L3: LLM 兜底（可选）
-        if self._llm_caller:
+        # LLM 兜底
+        if len(top_segments) <= 1 and self._llm_caller:
             llm_tasks = self._llm_split(task)
             if llm_tasks and len(llm_tasks) > 1:
-                logger.info("LLM split: %d sub-tasks", len(llm_tasks))
-                return llm_tasks
+                top_segments = llm_tasks
 
-        # 无法拆分 → 返回原始任务
-        return [task]
+        # 无法拆分 → 单任务（但先检查是否有分号）
+        if len(top_segments) <= 1:
+            # 检查是否纯分号分隔（如 "a;b;c"）
+            sub_tasks = self._semicolon_split(task)
+            sub_tasks = [t.strip() for t in sub_tasks if t.strip()]
+            if len(sub_tasks) > 1:
+                return [TaskGroup(tasks=sub_tasks, sequential=True)]
+            return [TaskGroup(tasks=[task])]
+
+        # 对每个顶级段，检查内部是否有分号 → 拆为连续子任务
+        groups: List[TaskGroup] = []
+        for segment in top_segments:
+            segment = segment.strip()
+            if not segment:
+                continue
+
+            # 按分号拆分
+            sub_tasks = self._semicolon_split(segment)
+            sub_tasks = [t.strip() for t in sub_tasks if t.strip()]
+
+            if not sub_tasks:
+                sub_tasks = [segment]
+
+            if len(sub_tasks) > 1:
+                # 有分号 → 连续任务组
+                groups.append(TaskGroup(tasks=sub_tasks, sequential=True))
+            else:
+                # 无分号 → 独立任务组
+                groups.append(TaskGroup(tasks=sub_tasks, sequential=False))
+
+        logger.info(
+            "Task split: %d groups, tasks=%s",
+            len(groups),
+            [g.tasks for g in groups],
+        )
+        return groups
+
+    def split_flat(self, task: str) -> List[str]:
+        """兼容旧接口：返回扁平的子任务列表（忽略分组信息）。"""
+        groups = self.split(task)
+        return [t for g in groups for t in g.tasks]
+
+    # -------------------------------------------------------------------
+    # L0: 分号拆分
+    # -------------------------------------------------------------------
+
+    def _semicolon_split(self, task: str) -> List[str]:
+        """按中英文分号拆分。"""
+        # 先保护引号内的分号
+        protected = self._protect_quoted_semicolon(task)
+        parts = re.split(r"[;；]", protected)
+        return [self._restore_semicolon(p) for p in parts]
+
+    def _protect_quoted_semicolon(self, text: str) -> str:
+        """将引号内的分号替换为占位符。"""
+        result = text
+        quote_pairs = [
+            ("“", "”"),  # ""
+            ("‘", "’"),  # ''
+            ("「", "」"),  # 「」
+            ('"', '"'),
+            ("'", "'"),
+        ]
+        for open_q, close_q in quote_pairs:
+            pattern = re.escape(open_q) + r"(.*?)" + re.escape(close_q)
+
+            def protect_inner(
+                match: re.Match, _o=open_q, _c=close_q
+            ) -> str:
+                inner = match.group(1).replace(";", "«SEMI»").replace(
+                    "；", "«SEMIC»"
+                )
+                return _o + inner + _c
+
+            result = re.sub(pattern, protect_inner, result, flags=re.DOTALL)
+        return result
+
+    @staticmethod
+    def _restore_semicolon(text: str) -> str:
+        return text.replace("«SEMI»", ";").replace(
+            "«SEMIC»", "；"
+        )
 
     # -------------------------------------------------------------------
     # L1: 规则拆分（按句号）
@@ -85,6 +183,8 @@ class TaskSplitter:
         """按中文句号 `。` 和英文句号 `.` 拆分，处理边界情况。"""
         # 先保护 URL 中的点号
         protected = self._protect_urls(task)
+        # 保护本地文件路径中的点号，例如 D:\tmp\test.pdf / D:tmptest.pdf
+        protected = self._protect_file_paths(protected)
         # 保护引号内的句号
         protected = self._protect_quoted(protected)
 
@@ -106,13 +206,29 @@ class TaskSplitter:
 
     def _protect_urls(self, text: str) -> str:
         """将 URL 中的点号替换为占位符，避免被拆分。"""
+
         def replace_url_dot(match: re.Match) -> str:
             return match.group(0).replace(".", "«DOT»")
 
         return re.sub(
-            r"https?://[^\s<>\"'""''「」]+",
+            r"https?://[^\s<>\"'“”‘’「」]+",
             replace_url_dot,
             text,
+        )
+
+    def _protect_file_paths(self, text: str) -> str:
+        """Protect local file paths so extensions like .pdf do not split tasks."""
+
+        def replace_path_dot(match: re.Match) -> str:
+            return match.group(0).replace(".", "«DOT»")
+
+        return re.sub(
+            r"(?<![A-Za-z0-9_])[A-Za-z]:(?:[\\/])?"
+            r"[^<>\"'“”‘’「」,，;；。\r\n]+?\."
+            r"(?:pdf|docx?|xlsx?|pptx?|txt|md|jpg|jpeg|png|webp|gif|mp4|mov|avi|mkv)",
+            replace_path_dot,
+            text,
+            flags=re.IGNORECASE,
         )
 
     def _protect_quoted(self, text: str) -> str:
@@ -132,8 +248,12 @@ class TaskSplitter:
         for open_q, close_q in quote_pairs:
             pattern = re.escape(open_q) + r"(.*?)" + re.escape(close_q)
 
-            def protect_inner(match: re.Match, _o=open_q, _c=close_q) -> str:
-                inner = match.group(1).replace(".", "«DOT»").replace("。", "«CDOT»")
+            def protect_inner(
+                match: re.Match, _o=open_q, _c=close_q
+            ) -> str:
+                inner = match.group(1).replace(".", "«DOT»").replace(
+                    "。", "«CDOT»"
+                )
                 return _o + inner + _c
 
             result = re.sub(pattern, protect_inner, result, flags=re.DOTALL)
@@ -143,7 +263,9 @@ class TaskSplitter:
     @staticmethod
     def _restore(text: str) -> str:
         """还原被保护的点号。"""
-        return text.replace("«DOT»", ".").replace("«CDOT»", "。")
+        return text.replace("«DOT»", ".").replace(
+            "«CDOT»", "。"
+        )
 
     @staticmethod
     def _strip_trailing_punctuation(text: str) -> str:
@@ -153,7 +275,12 @@ class TaskSplitter:
     @staticmethod
     def _is_pure_punctuation(text: str) -> bool:
         """判断文本是否全是标点或空白。"""
-        return bool(re.fullmatch(r"[\s，,。.；;、：:！!？?·\-—…·''\"\"''「」\(\)（）\[\]【】]+", text))
+        return bool(
+            re.fullmatch(
+                r"[\s，,。.；;、：:！!？?·\-—…·''\"\"''「」\(\)（）\[\]【】]+",
+                text,
+            )
+        )
 
     # -------------------------------------------------------------------
     # L2: 连接词拆分
@@ -187,7 +314,7 @@ class TaskSplitter:
             f"2. 如果有多个操作，按顺序拆分为多个子任务\n"
             f"3. 每个子任务应该是完整的、可独立执行的指令\n"
             f"4. 去掉连接词（然后、接着、并且等），只保留操作本身\n\n"
-            f"返回 JSON 格式: {{\"tasks\": [\"子任务1\", \"子任务2\", ...]}}"
+            f'返回 JSON 格式: {{"tasks": ["子任务1", "子任务2", ...]}}'
         )
 
         schema = {
@@ -206,7 +333,9 @@ class TaskSplitter:
             from src.core.llm_utils import chat_json_with_retry
 
             data = chat_json_with_retry(
-                self._llm_caller._client if hasattr(self._llm_caller, '_client') else self._llm_caller,
+                self._llm_caller._client
+                if hasattr(self._llm_caller, "_client")
+                else self._llm_caller,
                 prompt,
                 system_prompt="你是一个任务拆分器。将用户的复合指令拆分为独立的子任务。",
                 schema=schema,

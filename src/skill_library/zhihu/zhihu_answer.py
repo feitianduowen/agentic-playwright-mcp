@@ -1,5 +1,4 @@
 ANSWER_URL = "https://www.zhihu.com/question/2054905087156342820"
-SIGN_URL="https://www.zhihu.com/signin"
 
 def _js_string(value: str) -> str:
     text = str(value)
@@ -12,7 +11,7 @@ def _js_string(value: str) -> str:
 
 def run(keyword: str):
     """Open Zhihu question page, write an answer, and publish it."""
-    if not ensure_auth("zhihu", SIGN_URL):
+    if not ensure_auth("zhihu", ANSWER_URL):
         log("Zhihu login state not confirmed; skip answer")
         return
 

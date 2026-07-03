@@ -3,7 +3,6 @@
 
 
 WRITE_URL = "https://zhuanlan.zhihu.com/write"
-SIGN_URL="https://www.zhihu.com/signin"
 
 def _js_string(value: str) -> str:
     text = str(value)
@@ -16,7 +15,7 @@ def _js_string(value: str) -> str:
 
 def run(keyword: str):
     """Open Zhihu writer, fill title/body with keyword, and click publish."""
-    if not ensure_auth("zhihu", SIGN_URL):
+    if not ensure_auth("zhihu", WRITE_URL):
         log("Zhihu login state not confirmed; skip article publish")
         return
 
@@ -76,4 +75,3 @@ def run(keyword: str):
     wait(2)
 
     log(f"Zhihu article publish clicked: {keyword}")
-    close_browser()

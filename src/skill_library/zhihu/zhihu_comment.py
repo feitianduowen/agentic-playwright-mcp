@@ -1,5 +1,4 @@
 REVIEW_URL = "https://zhuanlan.zhihu.com/p/2055675816818774461"
-SIGN_URL="https://www.zhihu.com/signin"
 
 def _js_string(value: str) -> str:
     text = str(value)
@@ -12,7 +11,7 @@ def _js_string(value: str) -> str:
 
 def run(keyword: str):
     """Open Zhihu article page and fill the comment editor with keyword."""
-    if not ensure_auth("zhihu", SIGN_URL):
+    if not ensure_auth("zhihu", REVIEW_URL):
         log("Zhihu login state not confirmed; skip comment")
         return
 
