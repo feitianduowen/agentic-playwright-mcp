@@ -46,7 +46,7 @@ from src.core.llm_utils import chat_json_with_retry
 from src.core.script_engine import get_script_engine
 from src.core.script_generator import ScriptGenerator
 from src.core.skill_router import SkillDecision, SkillRouter, get_skill_router
-from src.core.task_splitter import TaskSplitter, get_task_splitter
+from src.core.task_splitter import TaskGroup, TaskSplitter, get_task_splitter
 from src.core.vision import get_vision_module
 # from src.core.vision import VisionModule, get_vision_module  # 暂时禁用
 from src.layer_2.controls import get_controls_exports
@@ -175,11 +175,15 @@ class AgentLoop:
     def run(self, task: str) -> AgentTaskResult:
         """执行一个自然语言任务。
 
-        支持多命令拆分：用户输入用句号分隔的多个命令时，自动拆分并顺序执行。
+        支持两种任务模式：
+        - 独立任务（`。`/连接词分隔）→ 每个任务开新标签页
+        - 连续任务（`;` 分隔）→ 同一标签页下快速顺序执行
 
         Args:
             task: 用户的任务描述，如"帮我在百度搜索 Python 教程"。
-                  支持多命令: "打开百度。搜索Python教程。截个图"。
+                  多任务: "打开百度。搜索Python教程。截个图"。
+                  连续任务: "打开百度;输入Python;点搜索"。
+                  混合: "打开百度。搜索Python；点第一个结果。打开GitHub"。
 
         Returns:
             AgentTaskResult 包含执行步骤、结果和输出。
@@ -187,35 +191,57 @@ class AgentLoop:
         # 初始化模块（确保 TaskSplitter 可用）
         self._init_modules()
 
-        # 拆分任务
-        sub_tasks = self._task_splitter.split(task)  # type: ignore[union-attr]
+        # 拆分任务为分组
+        groups = self._task_splitter.split(task)  # type: ignore[union-attr]
 
-        # 单命令 → 走原逻辑（零开销）
-        if len(sub_tasks) <= 1:
-            return self._run_single(task)
+        # 单组单任务 → 走原逻辑（零开销）
+        if len(groups) == 1 and len(groups[0].tasks) == 1:
+            return self._run_single(groups[0].tasks[0])
 
-        # 多命令 → 顺序执行
-        logger.info("Multi-command detected: %d sub-tasks", len(sub_tasks))
-        return self._run_multi(sub_tasks)
+        # 多组/连续任务 → 分组执行
+        total_tasks = sum(len(g.tasks) for g in groups)
+        logger.info(
+            "Multi-command detected: %d groups, %d total tasks",
+            len(groups),
+            total_tasks,
+        )
+        return self._run_groups(groups)
 
-    def _run_multi(self, sub_tasks: list[str]) -> AgentTaskResult:
-        """顺序执行多个子任务，共享浏览器实例，合并结果。"""
+    def _run_groups(self, groups: list[TaskGroup]) -> AgentTaskResult:
+        """按分组执行任务：独立任务开新标签页，连续任务同标签页顺序执行。"""
         combined = AgentTaskResult(
             success=True,
-            task=" | ".join(sub_tasks),
-            sub_tasks=sub_tasks,
+            task=" | ".join(
+                "; ".join(g.tasks) if g.sequential else " | ".join(g.tasks)
+                for g in groups
+            ),
+            sub_tasks=[t for g in groups for t in g.tasks],
         )
 
-        for i, sub_task in enumerate(sub_tasks):
-            logger.info("Running sub-task %d/%d: %s", i + 1, len(sub_tasks), sub_task)
-            sub_result = self._run_single(sub_task)
-            combined.sub_results.append(sub_result)
-            combined.steps.extend(sub_result.steps)
+        task_idx = 0
+        for group in groups:
+            if group.sequential:
+                logger.info(
+                    "Running sequential group (%d tasks): %s",
+                    len(group.tasks),
+                    "; ".join(group.tasks),
+                )
+                result = self._run_sequential(group.tasks, task_idx)
+            else:
+                logger.info(
+                    "Running parallel group (%d tasks, new tabs): %s",
+                    len(group.tasks),
+                    " | ".join(group.tasks),
+                )
+                result = self._run_in_new_tabs(group.tasks, task_idx)
 
-            if not sub_result.success:
+            combined.sub_results.extend(result.sub_results)
+            combined.steps.extend(result.steps)
+            task_idx += len(group.tasks)
+
+            if not result.success:
                 combined.success = False
-                combined.error = f"子任务 {i + 1}/{len(sub_tasks)} 失败: {sub_task}"
-                logger.warning("Sub-task %d failed: %s", i + 1, sub_task)
+                combined.error = result.error
                 break
 
         # 汇总最终 URL
@@ -230,7 +256,7 @@ class AgentLoop:
         outputs = []
         for i, sub_result in enumerate(combined.sub_results):
             status = "✓" if sub_result.success else "✗"
-            outputs.append(f"[{status}] 子任务 {i + 1}: {sub_tasks[i]}")
+            outputs.append(f"[{status}] 子任务 {i + 1}: {combined.sub_tasks[i]}")
             if sub_result.output:
                 outputs.append(f"  {sub_result.output}")
         combined.output = "\n".join(outputs)
@@ -239,8 +265,99 @@ class AgentLoop:
             "Multi-command finished: success=%s sub_tasks=%d/%d",
             combined.success,
             sum(1 for r in combined.sub_results if r.success),
-            len(sub_tasks),
+            len(combined.sub_tasks),
         )
+        return combined
+
+    def _run_in_new_tabs(
+        self, tasks: list[str], offset: int = 0
+    ) -> AgentTaskResult:
+        """每个任务在新标签页中执行。
+
+        Args:
+            tasks: 子任务列表。
+            offset: 全局子任务编号偏移（用于日志）。
+        """
+        combined = AgentTaskResult(
+            success=True,
+            task=" | ".join(tasks),
+            sub_tasks=tasks,
+        )
+
+        for i, task in enumerate(tasks):
+            global_idx = offset + i + 1
+            logger.info(
+                "New tab for task %d: %s", global_idx, task
+            )
+
+            # 确保浏览器可用
+            bm = get_browser_manager()
+            if not bm.is_alive():
+                logger.info("Browser not alive, relaunching...")
+                bm.launch()
+
+            new_page = bm.new_tab()
+            bm.switch_page(new_page)
+            sub_result = self._run_single(task)
+            combined.sub_results.append(sub_result)
+            combined.steps.extend(sub_result.steps)
+
+            if not sub_result.success:
+                combined.success = False
+                combined.error = (
+                    f"子任务 {global_idx} 失败: {task}"
+                )
+                logger.warning(
+                    "Task %d failed in new tab: %s", global_idx, task
+                )
+                break
+
+        return combined
+
+    def _run_sequential(
+        self, tasks: list[str], offset: int = 0
+    ) -> AgentTaskResult:
+        """同一标签页内快速顺序执行多个微操作。
+
+        Args:
+            tasks: 子任务列表。
+            offset: 全局子任务编号偏移（用于日志）。
+        """
+        combined = AgentTaskResult(
+            success=True,
+            task="; ".join(tasks),
+            sub_tasks=tasks,
+        )
+
+        for i, task in enumerate(tasks):
+            global_idx = offset + i + 1
+            logger.info(
+                "Sequential task %d/%d: %s",
+                global_idx,
+                offset + len(tasks),
+                task,
+            )
+
+            # 确保浏览器可用（前一个任务可能导致浏览器断开）
+            bm = get_browser_manager()
+            if not bm.is_alive():
+                logger.info("Browser not alive between sequential tasks, relaunching...")
+                bm.launch()
+
+            sub_result = self._run_single(task)
+            combined.sub_results.append(sub_result)
+            combined.steps.extend(sub_result.steps)
+
+            if not sub_result.success:
+                combined.success = False
+                combined.error = (
+                    f"连续任务 {global_idx} 失败: {task}"
+                )
+                logger.warning(
+                    "Sequential task %d failed: %s", global_idx, task
+                )
+                break
+
         return combined
 
     def _run_single(self, task: str) -> AgentTaskResult:

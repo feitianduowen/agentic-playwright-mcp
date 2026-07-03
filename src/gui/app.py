@@ -1075,6 +1075,7 @@ HTML_TEMPLATE = """
     <script>
         const promptedSaveDomains = new Map();
         let authPollTimer = null;
+        let authPromptOpen = false;  // 防止 confirm/alert 弹窗重叠
 
         async function maybeLoadSavedAuth(task, options) {
             const response = await fetch('/api/auth/suggest-load', {
@@ -1095,7 +1096,11 @@ HTML_TEMPLATE = """
             if (authPollTimer) {
                 clearInterval(authPollTimer);
             }
-            authPollTimer = setInterval(checkCurrentAuthState, 3000);
+            // 首次检查延迟 5 秒，之后每 30 秒轮询一次（避免频繁弹窗和页面闪烁）
+            setTimeout(() => {
+                checkCurrentAuthState();
+                authPollTimer = setInterval(checkCurrentAuthState, 30000);
+            }, 5000);
         }
 
         function stopAuthPolling() {
@@ -1106,6 +1111,7 @@ HTML_TEMPLATE = """
         }
 
         async function checkCurrentAuthState() {
+            if (authPromptOpen) return;  // 弹窗打开中，跳过本次检查
             try {
                 const response = await fetch('/api/auth/current');
                 const result = await response.json();
@@ -1125,8 +1131,10 @@ HTML_TEMPLATE = """
                 }
                 promptedSaveDomains.set(result.domain, promptState);
                 const action = result.has_auth ? '更新保存' : '保存';
+                authPromptOpen = true;
                 const ok = confirm(`检测到当前 ${result.domain} 页面可能已有登录状态，是否${action}登录信息？`);
                 if (!ok) {
+                    authPromptOpen = false;
                     return;
                 }
                 const saveResponse = await fetch('/api/auth/save', {
@@ -1141,7 +1149,9 @@ HTML_TEMPLATE = """
                 } else {
                     alert(`保存失败：${saved.error || '未知错误'}`);
                 }
+                authPromptOpen = false;
             } catch (error) {
+                authPromptOpen = false;
                 console.warn('Auth polling failed:', error);
             }
         }

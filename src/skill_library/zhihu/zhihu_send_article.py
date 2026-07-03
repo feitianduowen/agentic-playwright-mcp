@@ -72,4 +72,3 @@ def run(keyword: str):
     wait(2)
 
     log(f"Zhihu article publish clicked: {keyword}")
-    close_browser()

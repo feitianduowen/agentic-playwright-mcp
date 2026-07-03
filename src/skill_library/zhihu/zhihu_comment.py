@@ -64,4 +64,3 @@ def run(keyword: str):
     wait(2)
 
     log(f"Zhihu review published: {keyword}")
-    close_browser()
