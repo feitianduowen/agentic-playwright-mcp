@@ -421,6 +421,26 @@ class TestGitHubLoginScript:
         assert decision.skill.id == "domain/zhihu_search"
         assert 'run(keyword="Python 入门")' in decision.script
 
+    def test_router_routes_postfix_zhihu_search_even_when_keyword_mentions_xiaohongshu(self):
+        router = SkillRouter(library_dir="src/skill_library")
+
+        decision = router.route("帮我搜索在小红书上有哪些典型的人群，在知乎上。")
+
+        assert decision.skill is not None
+        assert decision.skill.id == "domain/zhihu_search"
+        assert 'run(keyword="在小红书上有哪些典型的人群")' in decision.script
+        assert "search_flow" not in decision.script
+
+    def test_router_routes_postfix_xiaohongshu_search_even_when_keyword_mentions_zhihu(self):
+        router = SkillRouter(library_dir="src/skill_library")
+
+        decision = router.route("帮我搜索怎么看知乎，在小红书上。")
+
+        assert decision.skill is not None
+        assert decision.skill.id == "domain/xiaohongshu_search"
+        assert 'run(keyword="怎么看知乎")' in decision.script
+        assert "search_flow" not in decision.script
+
     def test_router_defaults_generic_publish_content_to_xiaohongshu_publish_script(self):
         router = SkillRouter(library_dir="src/skill_library")
 

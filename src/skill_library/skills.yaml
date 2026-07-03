@@ -243,7 +243,7 @@ skills:
       - "compose email"
       - "Compose"
     url_patterns: ["mail.google.com"]
-    description: "检查 Gmail 是否已登录，必要时等待用户手动登录，然后点击 Compose，填写收件人、标题和正文并发送"
+    description: "检查 Gmail 是否已登录，必要时等待用户手动登录，然后点击 Compose，点击写信窗口右上角 Full screen / Pop-out 放大图标，再填写收件人、标题和正文并发送"
     version: "1.0.0"
     examples:
       - "Gmail发送邮件，收件人是alice@example.com，标题是测试标题，正文是测试正文"
@@ -668,7 +668,7 @@ skills:
     triggers: ["xiaohongshu", "小红书", "小红书搜索", "小红书 搜索", "小红书上找", "搜索小红书"]
     trigger_patterns:
       - "(?:在|用|打开)?\\s*(?:小红书|xiaohongshu|xhs|rednote)(?:上)?\\s*(?:搜索|搜|查找|查询|查|找|search)\\s*(.+)"
-      - "(?:搜索|搜|查找|查询|查|找|search)\\s*(.+?)\\s*(?:用|在|到)\\s*(?:小红书|xiaohongshu|xhs|rednote)(?:上)?$"
+      - "(?:搜索|搜|查找|查询|查|找|search)\\s*(.+?)\\s*(?:用|在|到)\\s*(?:小红书|xiaohongshu|xhs|rednote)(?:上)?[。.!！?？\\s]*$"
     url_patterns: ["xiaohongshu.com"]
     description: "在小红书搜索笔记和内容"
     version: "1.0.0"
@@ -731,7 +731,7 @@ skills:
     triggers: ["知乎搜索", "知乎 搜索", "在知乎搜索", "知乎上搜", "知乎搜", "搜索知乎", "zhihu", "zhihu search"]
     trigger_patterns:
       - "(?:在|用|打开)?\\s*(?:知乎|zhihu)(?:上)?\\s*(?:搜索|搜|查找|查询|查|找|search)\\s*(.+)"
-      - "(?:搜索|搜|查找|查询|查|找|search)\\s*(.+?)\\s*(?:用|在|到)\\s*(?:知乎|zhihu)(?:上)?$"
+      - "(?:搜索|搜|查找|查询|查|找|search)\\s*(.+?)\\s*(?:用|在|到)\\s*(?:知乎|zhihu)(?:上)?[。.!！?？\\s]*$"
     url_patterns: ["zhihu.com"]
     description: "在知乎搜索"
     version: "1.0.0"
@@ -795,60 +795,6 @@ skills:
           - "(?:在|到)?知乎(?:上)?(?:提问|提问题)\\s*[:：]?\\s*(.+)$"
           - "知乎\\s*(?:提问|提问题)\\s*[:：]?\\s*(.+)$"
           - "(?:提问|提问题)\\s*[:：]?\\s*(.+)$"
-
-  # ──────────────────────────────────────────────
-  # 通用交互模板
-  # ──────────────────────────────────────────────
-
-  - id: "interaction/login_flow"
-    name: "通用登录"
-    type: "interaction"
-    triggers: ["登录", "login", "sign in", "signin"]
-    url_patterns: []
-    description: "通用登录流程：填写用户名密码并提交"
-    version: "1.0.0"
-    examples:
-      - "登录这个网站"
-      - "帮我登录当前页面的账号"
-
-  - id: "interaction/search_flow"
-    name: "通用搜索"
-    type: "interaction"
-    triggers: ["搜索", "search", "查找", "find"]
-    url_patterns: []
-    description: "通用搜索流程：输入关键词并点击搜索"
-    version: "1.0.0"
-    examples:
-      - "搜索一下这个网站"
-      - "在当前页面搜索"
-    params:
-      keyword:
-        type: keyword
-        required: true
-        description: "搜索关键词"
-
-  - id: "interaction/form_fill"
-    name: "通用表单填写"
-    type: "interaction"
-    triggers: ["表单", "form", "填写", "fill", "注册", "register"]
-    url_patterns: []
-    description: "通用表单填写：批量填写多个表单字段"
-    version: "1.0.0"
-    examples:
-      - "帮我填写这个表单"
-      - "注册一个账号"
-
-  - id: "interaction/pagination"
-    name: "通用分页翻页"
-    type: "interaction"
-    triggers: ["分页", "pagination", "翻页", "next", "下一页"]
-    url_patterns: []
-    description: "通用分页翻页：遍历多页内容"
-    version: "1.0.0"
-    examples:
-      - "翻到下一页"
-      - "继续浏览下一页"
-
 
 # ──────────────────────────────────────────────
 # sources 段 -- 文件映射
@@ -977,21 +923,4 @@ sources:
 
   - id: "domain/csnd_search"
     file: "search/csnd_search.py"
-    entry: "run"
-
- 
-  - id: "interaction/login_flow"
-    file: "others/login_flow.py"
-    entry: "run"
-
-  - id: "interaction/search_flow"
-    file: "search/search_flow.py"
-    entry: "run"
-
-  - id: "interaction/form_fill"
-    file: "others/form_fill.py"
-    entry: "run"
-
-  - id: "interaction/pagination"
-    file: "others/pagination.py"
     entry: "run"
