@@ -41,6 +41,10 @@ parameters:
     type: string
     required: false
     description: PDF 导出路径。
+  file_name:
+    type: string
+    required: false
+    description: 文档文件名。
   font_name:
     type: string
     required: false
@@ -49,6 +53,18 @@ parameters:
     type: string
     required: false
     description: 正文字号，例如14。
+  font_color:
+    type: string
+    required: false
+    description: 字体颜色，例如红色。
+  italic:
+    type: string
+    required: false
+    description: 是否使用斜体。
+  image_path:
+    type: string
+    required: false
+    description: 插入到文章末尾的本地图片路径。
 
 steps:
   - action: local_desktop
@@ -64,6 +80,10 @@ steps:
     target: body
     value: "{{body}}"
     comment: 写入正文，设置字体、字号、段落缩进，并对列表行应用编号。
+  - action: insert
+    target: image
+    value: "{{image_path}}"
+    comment: 如果提供图片路径，则插入本地图片。
   - action: save
     target: docx
     value: "{{docx_path}}"

@@ -223,7 +223,8 @@ class TaskSplitter:
             return match.group(0).replace(".", "«DOT»")
 
         return re.sub(
-            r"(?<![A-Za-z0-9_])[A-Za-z]:(?:[\\/])?[^ \t\r\n<>\"'“”‘’「」,，;；。]+?\."
+            r"(?<![A-Za-z0-9_])[A-Za-z]:(?:[\\/])?"
+            r"[^<>\"'“”‘’「」,，;；。\r\n]+?\."
             r"(?:pdf|docx?|xlsx?|pptx?|txt|md|jpg|jpeg|png|webp|gif|mp4|mov|avi|mkv)",
             replace_path_dot,
             text,

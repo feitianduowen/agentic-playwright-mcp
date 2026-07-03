@@ -715,8 +715,12 @@ def wps_writer_export(
     output_dir: str | None = None,
     docx_path: str | None = None,
     pdf_path: str | None = None,
+    file_name: str | None = None,
     font_name: str | None = None,
     font_size: int | str | None = None,
+    font_color: int | str | None = None,
+    italic: bool | str | None = None,
+    image_path: str | None = None,
     keep_open: bool = True,
 ) -> dict:
     """Create a WPS Writer/Word document and export it as PDF."""
@@ -728,8 +732,12 @@ def wps_writer_export(
         output_dir=output_dir,
         docx_path=docx_path,
         pdf_path=pdf_path,
+        file_name=file_name,
         font_name=font_name,
         font_size=font_size,
+        font_color=font_color,
+        italic=italic,
+        image_path=image_path,
         keep_open=keep_open,
     )
 

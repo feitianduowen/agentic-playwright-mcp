@@ -100,6 +100,17 @@ class TestFilePathProtectionFlat:
 
         assert result == [task]
 
+    def test_windows_image_path_with_spaces_not_split(self):
+        splitter = TaskSplitter()
+        task = (
+            r'WPS写文章，标题“edewvr”，内容“wewret”，插入图片'
+            r'"D:\Users\qq275\Pictures\Screenshots\屏幕截图 2026-04-07 180134.png"'
+        )
+
+        result = splitter.split_flat(task)
+
+        assert result == [task]
+
 
 class TestQuotedProtectionFlat:
     """引号内的句号不拆分（split_flat）。"""

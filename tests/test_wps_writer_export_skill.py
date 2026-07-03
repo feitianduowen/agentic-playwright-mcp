@@ -23,15 +23,26 @@ class FakeListFormat:
         self.removed += 1
 
 
+class FakeInlineShapes:
+    def __init__(self) -> None:
+        self.pictures: list[str] = []
+
+    def AddPicture(  # noqa: N802
+        self, path: str, link_to_file: bool = False, save_with_document: bool = True
+    ) -> None:
+        self.pictures.append(path)
+
+
 class FakeSelection:
     def __init__(self) -> None:
-        self.Font = SimpleNamespace(Name="", Size=0, Bold=0)
+        self.Font = SimpleNamespace(Name="", Size=0, Bold=0, Italic=0, Color=None)
         self.ParagraphFormat = SimpleNamespace(
             Alignment=None,
             FirstLineIndent=None,
             LineSpacingRule=None,
         )
         self.Range = SimpleNamespace(ListFormat=FakeListFormat())
+        self.InlineShapes = FakeInlineShapes()
         self.typed: list[str] = []
 
     def TypeText(self, text: str) -> None:
@@ -120,6 +131,41 @@ def test_export_article_to_pdf_uses_wps_com_and_exports_pdf(tmp_path):
     assert result["font_size"] == 14
 
 
+def test_export_article_to_pdf_applies_style_file_name_and_image(tmp_path):
+    app = FakeApplication()
+    image_path = tmp_path / "screen shot.png"
+    image_path.write_bytes(b"fake image")
+
+    result = export_article_to_pdf(
+        title="edewvr",
+        body="wewret",
+        pdf_path=str(tmp_path / "test.pdf"),
+        file_name="测试",
+        keep_open=True,
+        visible=False,
+        font_name="斜体红色宋体",
+        font_size="14",
+        font_color="红色",
+        italic="斜体",
+        image_path=str(image_path),
+        dispatch_fn=lambda prog_id: app,
+    )
+
+    assert app.document is not None
+    assert app.document.saved is not None
+    assert app.document.saved[0] == str((tmp_path / "test.docx").resolve())
+    assert app.document.exported is not None
+    assert app.document.exported[0] == str((tmp_path / "test.pdf").resolve())
+    assert app.Selection.Font.Name == "宋体"
+    assert app.Selection.Font.Size == 14
+    assert app.Selection.Font.Italic == -1
+    assert app.Selection.Font.Color == 255
+    assert app.Selection.InlineShapes.pictures == [str(image_path.resolve())]
+    assert result["font_color"] == 255
+    assert result["italic"] is True
+    assert result["image_path"] == str(image_path.resolve())
+
+
 def test_skill_run_calls_registered_export_function():
     calls = []
     logs = []
@@ -145,8 +191,12 @@ def test_skill_run_calls_registered_export_function():
             "output_dir": None,
             "docx_path": None,
             "pdf_path": None,
+            "file_name": None,
             "font_name": None,
             "font_size": None,
+            "font_color": None,
+            "italic": None,
+            "image_path": None,
             "keep_open": True,
         }
     ]
@@ -206,3 +256,26 @@ def test_router_routes_wps_docx_pdf_path_and_font_request():
     assert 'pdf_path="D:tmptest.pdf"' in decision.script
     assert 'font_name="宋体"' in decision.script
     assert 'font_size="14"' in decision.script
+
+
+def test_router_routes_wps_style_and_insert_image_request():
+    router = SkillRouter(library_dir="src/skill_library")
+
+    decision = router.route(
+        r'WPS写文章，文件名是“测试”，标题“edewvr”，内容是“wewret”，路径是"D:/tmp/test.pdf"，字体是斜体红色宋体14，插入图片"D:\Users\qq275\Pictures\Screenshots\屏幕截图 2026-04-07 180134.png"'
+    )
+
+    assert decision.skill is not None
+    assert decision.skill.id == "domain/wps_writer_export"
+    assert 'title="edewvr"' in decision.script
+    assert 'body="wewret"' in decision.script
+    assert 'file_name="测试"' in decision.script
+    assert 'pdf_path="D:/tmp/test.pdf"' in decision.script
+    assert 'font_name="宋体"' in decision.script
+    assert 'font_size="14"' in decision.script
+    assert 'font_color="红色"' in decision.script
+    assert 'italic="斜体"' in decision.script
+    assert (
+        'image_path="D:\\\\Users\\\\qq275\\\\Pictures\\\\Screenshots\\\\屏幕截图 2026-04-07 180134.png"'
+        in decision.script
+    )

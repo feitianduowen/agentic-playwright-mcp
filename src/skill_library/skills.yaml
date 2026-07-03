@@ -96,7 +96,7 @@ skills:
     type: "domain"
     platform: "wps"
     action: "export"
-    triggers: ["WPS", "wps", "金山办公", "金山文档", "金山文字", "WPS客户端", "docx", "Word文档", "导出PDF", "保存PDF"]
+    triggers: ["WPS", "wps", "金山办公", "金山文档", "金山文字", "WPS客户端", "docx", "Word文档", "写文章", "导出PDF", "保存PDF", "插入图片", "字体颜色", "斜体"]
     trigger_patterns:
       - "(?:wps|金山办公|金山文档|金山文字|wps客户端).{0,30}(?:写文章|写文档|新建文档|新建文字|生成文档|导出\\s*pdf|保存\\s*pdf|导出)"
       - "(?:写文章|写文档|新建文档|新建文字|生成文档|导出\\s*pdf|保存\\s*pdf).{0,30}(?:wps|金山办公|金山文档|金山文字|wps客户端)"
@@ -129,19 +129,26 @@ skills:
         required: false
         description: "docx 保存路径"
         extract_patterns:
-          - '(?:docx路径|文档路径|保存路径|docx_path)\s*(?:是|为|:|：)?\s*["“]?([A-Za-z]:(?:[\\/])?[^"”\s,，;；。]+?\.docx)'
+          - '(?:docx路径|文档路径|保存路径|docx_path)\s*(?:是|为|:|：)?\s*["“]?([A-Za-z]:(?:[\\/])?[^"”\n]+?\.docx)'
       pdf_path:
         type: string
         required: false
         description: "PDF 导出路径"
         extract_patterns:
-          - '(?:PDF路径|pdf路径|导出路径|保存路径|路径|pdf_path)\s*(?:是|为|:|：)?\s*["“]?([A-Za-z]:(?:[\\/])?[^"”\s,，;；。]+?\.pdf)'
-          - '(?:导出为|保存为)\s*["“]?([A-Za-z]:(?:[\\/])?[^"”\s,，;；。]+?\.pdf)'
+          - '(?:PDF路径|pdf路径|导出路径|保存路径|路径|pdf_path)\s*(?:是|为|:|：)?\s*["“]?([A-Za-z]:(?:[\\/])?[^"”\n]+?\.pdf)'
+          - '(?:导出为|保存为)\s*["“]?([A-Za-z]:(?:[\\/])?[^"”\n]+?\.pdf)'
+      file_name:
+        type: string
+        required: false
+        description: "文档文件名，不含路径时用于生成 docx/pdf 文件名"
+        extract_patterns:
+          - '(?:文件名|文件名称|filename|file_name)\s*(?:是|为|:|：)?\s*["“]?([^"”，,。;；\n]+)'
       font_name:
         type: string
         required: false
         description: "正文和标题使用的字体名称"
         extract_patterns:
+          - '(宋体|黑体|楷体(?:_GB2312)?|仿宋|微软雅黑|Microsoft YaHei|Arial|Times New Roman|SimSun)\s*\d*\s*号?'
           - '(?:字体|font)\s*(?:是|为|:|：)?\s*["“]?([A-Za-z\u4e00-\u9fff ]+?)(?=\s*\d+\s*号|\s*字号|[,，。]|$)'
           - '([A-Za-z\u4e00-\u9fff ]+?)\s*\d+\s*号'
       font_size:
@@ -150,7 +157,26 @@ skills:
         description: "正文字号"
         extract_patterns:
           - '(?:字号|字体大小|font_size)\s*(?:是|为|:|：)?\s*(\d{1,2})'
-          - '(?:字体|font).{0,12}?(\d{1,2})\s*号'
+          - '(?:字体|font).{0,20}?(\d{1,2})\s*号?'
+      font_color:
+        type: string
+        required: false
+        description: "正文和标题使用的字体颜色"
+        extract_patterns:
+          - '(?:字体颜色|颜色|font_color)\s*(?:是|为|:|：)?\s*(红色|蓝色|绿色|黑色|白色|黄色|灰色|red|blue|green|black|white|yellow|gray|grey)'
+          - '(?:字体|font).{0,12}?(红色|蓝色|绿色|黑色|白色|黄色|灰色|red|blue|green|black|white|yellow|gray|grey)'
+      italic:
+        type: string
+        required: false
+        description: "是否使用斜体"
+        extract_patterns:
+          - '(斜体|italic)'
+      image_path:
+        type: image_path
+        required: false
+        description: "需要插入到文档末尾的本地图片路径"
+        extract_patterns:
+          - '(?:插入图片|图片地址|图片路径|图片|image_path|image)\s*(?:是|为|:|：)?\s*["“]?([A-Za-z]:(?:[\\/])?[^"”\n]+?\.(?:jpg|jpeg|png|webp|bmp|gif))'
 
   # ──────────────────────────────────────────────
   # GitHub
