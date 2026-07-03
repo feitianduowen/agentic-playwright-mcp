@@ -821,7 +821,7 @@ class SkillRouter:
         if ptype == "keyword":
             direct_patterns = [
                 r"(?:在|用|打开)?\s*(?:百度|baidu|google|谷歌|bing|必应|小红书|xiaohongshu|xhs|rednote|知乎|zhihu|github|amazon|亚马逊|youtube|油管|bilibili|B站|b站|哔哩哔哩|哔哩|微博|weibo|淘宝|taobao|豆包|doubao|csdn|csnd)(?:上)?\s*(?:搜索|搜|查找|查询|查|找|问|问答|search)\s*(.+)$",
-                r"(?:搜索|搜|查找|查询|查|找|问|问答|search)\s*(.+?)\s*(?:用|在|到)\s*(?:百度|baidu|google|谷歌|bing|必应|小红书|xiaohongshu|xhs|rednote|知乎|zhihu|github|amazon|亚马逊|youtube|油管|bilibili|B站|b站|哔哩哔哩|哔哩|微博|weibo|淘宝|taobao|豆包|doubao|csdn|csnd)(?:上)?$",
+                r"(?:搜索|搜|查找|查询|查|找|问|问答|search)\s*(.+?)\s*(?:用|在|到)\s*(?:百度|baidu|google|谷歌|bing|必应|小红书|xiaohongshu|xhs|rednote|知乎|zhihu|github|amazon|亚马逊|youtube|油管|bilibili|B站|b站|哔哩哔哩|哔哩|微博|weibo|淘宝|taobao|豆包|doubao|csdn|csnd)(?:上)?[。.!！?？\s]*$",
             ]
             for pattern in direct_patterns:
                 match = re.search(pattern, task, re.IGNORECASE | re.DOTALL)
@@ -880,7 +880,7 @@ class SkillRouter:
         # 注意：长词必须排在短词前面，否则 "搜索" 中的 "搜" 会先被匹配
         direct_patterns = [
             r"(?:在|用|打开)?\s*(?:百度|baidu|google|谷歌|bing|必应|小红书|xiaohongshu|xhs|rednote|知乎|zhihu|github|amazon|亚马逊|youtube|油管|bilibili|B站|b站|哔哩哔哩|哔哩|微博|weibo|淘宝|taobao|豆包|doubao|csdn|csnd)(?:上)?\s*(?:搜索|搜|查找|查询|查|找|问|问答|search)\s*(.+)$",
-            r"(?:搜索|搜|查找|查询|查|找|问|问答|search)\s*(.+?)\s*(?:用|在|到)\s*(?:百度|baidu|google|谷歌|bing|必应|小红书|xiaohongshu|xhs|rednote|知乎|zhihu|github|amazon|亚马逊|youtube|油管|bilibili|B站|b站|哔哩哔哩|哔哩|微博|weibo|淘宝|taobao|豆包|doubao|csdn|csnd)(?:上)?$",
+            r"(?:搜索|搜|查找|查询|查|找|问|问答|search)\s*(.+?)\s*(?:用|在|到)\s*(?:百度|baidu|google|谷歌|bing|必应|小红书|xiaohongshu|xhs|rednote|知乎|zhihu|github|amazon|亚马逊|youtube|油管|bilibili|B站|b站|哔哩哔哩|哔哩|微博|weibo|淘宝|taobao|豆包|doubao|csdn|csnd)(?:上)?[。.!！?？\s]*$",
         ]
         for pattern in direct_patterns:
             match = re.search(pattern, task, re.IGNORECASE | re.DOTALL)

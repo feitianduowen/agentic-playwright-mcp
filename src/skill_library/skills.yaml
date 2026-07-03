@@ -243,7 +243,7 @@ skills:
       - "compose email"
       - "Compose"
     url_patterns: ["mail.google.com"]
-    description: "检查 Gmail 是否已登录，必要时等待用户手动登录，然后点击 Compose，填写收件人、标题和正文并发送"
+    description: "检查 Gmail 是否已登录，必要时等待用户手动登录，然后点击 Compose，点击写信窗口右上角 Full screen / Pop-out 放大图标，再填写收件人、标题和正文并发送"
     version: "1.0.0"
     examples:
       - "Gmail发送邮件，收件人是alice@example.com，标题是测试标题，正文是测试正文"
@@ -668,7 +668,7 @@ skills:
     triggers: ["xiaohongshu", "小红书", "小红书搜索", "小红书 搜索", "小红书上找", "搜索小红书"]
     trigger_patterns:
       - "(?:在|用|打开)?\\s*(?:小红书|xiaohongshu|xhs|rednote)(?:上)?\\s*(?:搜索|搜|查找|查询|查|找|search)\\s*(.+)"
-      - "(?:搜索|搜|查找|查询|查|找|search)\\s*(.+?)\\s*(?:用|在|到)\\s*(?:小红书|xiaohongshu|xhs|rednote)(?:上)?$"
+      - "(?:搜索|搜|查找|查询|查|找|search)\\s*(.+?)\\s*(?:用|在|到)\\s*(?:小红书|xiaohongshu|xhs|rednote)(?:上)?[。.!！?？\\s]*$"
     url_patterns: ["xiaohongshu.com"]
     description: "在小红书搜索笔记和内容"
     version: "1.0.0"
@@ -731,7 +731,7 @@ skills:
     triggers: ["知乎搜索", "知乎 搜索", "在知乎搜索", "知乎上搜", "知乎搜", "搜索知乎", "zhihu", "zhihu search"]
     trigger_patterns:
       - "(?:在|用|打开)?\\s*(?:知乎|zhihu)(?:上)?\\s*(?:搜索|搜|查找|查询|查|找|search)\\s*(.+)"
-      - "(?:搜索|搜|查找|查询|查|找|search)\\s*(.+?)\\s*(?:用|在|到)\\s*(?:知乎|zhihu)(?:上)?$"
+      - "(?:搜索|搜|查找|查询|查|找|search)\\s*(.+?)\\s*(?:用|在|到)\\s*(?:知乎|zhihu)(?:上)?[。.!！?？\\s]*$"
     url_patterns: ["zhihu.com"]
     description: "在知乎搜索"
     version: "1.0.0"
@@ -810,22 +810,6 @@ skills:
     examples:
       - "登录这个网站"
       - "帮我登录当前页面的账号"
-
-  - id: "interaction/search_flow"
-    name: "通用搜索"
-    type: "interaction"
-    triggers: ["搜索", "search", "查找", "find"]
-    url_patterns: []
-    description: "通用搜索流程：输入关键词并点击搜索"
-    version: "1.0.0"
-    examples:
-      - "搜索一下这个网站"
-      - "在当前页面搜索"
-    params:
-      keyword:
-        type: keyword
-        required: true
-        description: "搜索关键词"
 
   - id: "interaction/form_fill"
     name: "通用表单填写"
@@ -982,10 +966,6 @@ sources:
  
   - id: "interaction/login_flow"
     file: "others/login_flow.py"
-    entry: "run"
-
-  - id: "interaction/search_flow"
-    file: "search/search_flow.py"
     entry: "run"
 
   - id: "interaction/form_fill"

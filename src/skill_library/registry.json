@@ -111,16 +111,6 @@
       "description": "通用登录流程：填写用户名密码并提交"
     },
     {
-      "id": "search_flow",
-      "name": "通用搜索",
-      "type": "interaction",
-      "triggers": ["搜索", "search", "查找", "find"],
-      "url_patterns": [],
-      "file": "search/search_flow.py",
-      "function": "run",
-      "description": "通用搜索流程：输入关键词并点击搜索"
-    },
-    {
       "id": "form_fill",
       "name": "通用表单填写",
       "type": "interaction",
