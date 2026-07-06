@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -66,6 +67,53 @@ from src.logging import bind_context, get_logger, log_timing
 from src.skill_library.registry import SkillRegistry, get_skill_registry
 
 logger = get_logger(__name__)
+
+
+_EXPLORE_ENTRYPOINTS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "gmail",
+        "https://mail.google.com/mail/u/0/#inbox",
+        ("gmail", "谷歌邮箱", "google mail"),
+    ),
+    ("github", "https://github.com/", ("github",)),
+    (
+        "xiaohongshu",
+        "https://www.xiaohongshu.com/",
+        ("小红书", "xiaohongshu", "rednote"),
+    ),
+    ("zhihu", "https://www.zhihu.com/", ("知乎", "zhihu")),
+    (
+        "bilibili",
+        "https://www.bilibili.com/",
+        ("bilibili", "哔哩哔哩", "哔哩", "b站"),
+    ),
+    ("douyin", "https://www.douyin.com/", ("douyin", "抖音")),
+    ("baidu", "https://www.baidu.com/", ("baidu", "百度")),
+    ("google", "https://www.google.com/", ("google", "谷歌")),
+    ("bing", "https://www.bing.com/", ("bing", "必应")),
+    ("weibo", "https://weibo.com/", ("weibo", "微博")),
+    ("taobao", "https://www.taobao.com/", ("taobao", "淘宝")),
+    ("jd", "https://www.jd.com/", ("jd", "京东")),
+)
+
+_PLATFORM_ACTION_WORDS = (
+    "搜索",
+    "搜",
+    "查找",
+    "查询",
+    "登录",
+    "登陆",
+    "发布",
+    "发送",
+    "发",
+    "评论",
+    "留言",
+    "打开",
+    "进入",
+    "问",
+    "提问",
+    "写",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +470,8 @@ class AgentLoop:
                 self._emit_task_after(result, task_id)
                 return result
 
+            self._bootstrap_initial_page(task)
+
             with log_timing("agent_task", task=task) as task_meta:
                 while state not in (AgentState.DONE, AgentState.FAILED):
                     step_number += 1
@@ -584,6 +634,86 @@ class AgentLoop:
                 cfg.get("EXPERIENCE_CONFIDENCE_THRESHOLD", 0.8)
             ),
         )
+
+    def _bootstrap_initial_page(self, task: str) -> str | None:
+        """Navigate away from about:blank before the first observe when possible."""
+
+        bm = get_browser_manager()
+        page = bm.get_page()
+        if not self._is_blank_page(getattr(page, "url", "")):
+            return None
+
+        target_url = self._resolve_initial_entry_url(task)
+        if not target_url:
+            return None
+
+        try:
+            try:
+                page.goto(target_url, wait_until="load")
+            except TypeError:
+                page.goto(target_url)
+        except Exception as exc:
+            logger.warning("Explore bootstrap navigation failed: %s", exc)
+            return None
+
+        logger.info("Explore bootstrap navigated to %s", target_url)
+        return target_url
+
+    @staticmethod
+    def _is_blank_page(url: str | None) -> bool:
+        value = (url or "").strip().lower()
+        return value in {"", "about:blank"} or value.startswith("about:blank?")
+
+    @classmethod
+    def _resolve_initial_entry_url(cls, task: str) -> str | None:
+        explicit_url = cls._extract_first_url(task)
+        if explicit_url:
+            return explicit_url
+
+        platform = cls._infer_target_platform(task)
+        if platform:
+            for name, url, _aliases in _EXPLORE_ENTRYPOINTS:
+                if name == platform:
+                    return url
+        return None
+
+    @staticmethod
+    def _extract_first_url(task: str) -> str | None:
+        match = re.search(r"https?://[^\s<>'\"，。；、]+", task)
+        if not match:
+            match = re.search(r"\bwww\.[^\s<>'\"，。；、]+", task, re.IGNORECASE)
+        if not match:
+            return None
+
+        url = match.group(0).rstrip(").,，。；;、]】\"'")
+        if not re.match(r"^https?://", url, re.IGNORECASE):
+            url = f"https://{url}"
+        return url
+
+    @classmethod
+    def _infer_target_platform(cls, task: str) -> str | None:
+        mentions: list[tuple[int, str]] = []
+        action_pattern = "|".join(re.escape(word) for word in _PLATFORM_ACTION_WORDS)
+
+        for platform, _url, aliases in _EXPLORE_ENTRYPOINTS:
+            for alias in sorted(aliases, key=len, reverse=True):
+                alias_pattern = re.escape(alias)
+                patterns = (
+                    rf"(?:在|到|用|打开|进入|去)\s*{alias_pattern}(?:上|里|中)?",
+                    rf"{alias_pattern}(?:上|里|中)?\s*(?:{action_pattern})",
+                )
+                for pattern in patterns:
+                    for match in re.finditer(pattern, task, re.IGNORECASE):
+                        mentions.append((match.start(), platform))
+
+        if mentions:
+            return max(mentions, key=lambda item: item[0])[1]
+
+        lowered = task.lower()
+        for platform, _url, aliases in _EXPLORE_ENTRYPOINTS:
+            if any(alias.lower() in lowered for alias in aliases):
+                return platform
+        return None
 
     # -------------------------------------------------------------------
     # Event emission helpers
@@ -1027,7 +1157,8 @@ class AgentLoop:
         return url
 
     def _ensure_explore_executor(self) -> ExploreExecutor:
-        page = get_browser_manager().get_page()
+        bm = get_browser_manager()
+        page = bm.get_page()
         if self._snapshot_gen is None:
             self._snapshot_gen = SnapshotGenerator(self._explore_config)
         if (
@@ -1038,6 +1169,7 @@ class AgentLoop:
                 page,
                 self._snapshot_gen,
                 self._explore_config,
+                browser_manager=bm,
             )
         return self._explore_executor
 

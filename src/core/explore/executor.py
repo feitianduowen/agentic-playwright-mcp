@@ -7,6 +7,8 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from src.core.login_guard import GenericLoginGuard
+
 from .models import (
     Action,
     ActionBatch,
@@ -71,13 +73,21 @@ class ExploreExecutor:
         page: Any,
         snapshot_generator: Any | None = None,
         config: Any = None,
+        browser_manager: Any | None = None,
     ) -> None:
         self._page = page
         self._snapshot_gen = snapshot_generator
         self._config = config
+        self._browser_manager = browser_manager
         self._current_snapshot: SnapshotResponse | None = None
         self._valid_refs: set[str] = set()
         self._ref_locator_cache: dict[str, Any] = {}
+        self._login_guard = GenericLoginGuard(
+            lambda: self._page,
+            browser_manager=browser_manager,
+            log_fn=lambda message: None,
+            panel_manager_getter=self._get_panel_manager,
+        )
 
     def execute(self, batch: ActionBatch | dict[str, Any]) -> ExecutionResult:
         """Execute an action batch and stop on the first failure."""
@@ -195,6 +205,17 @@ class ExploreExecutor:
     def _execute_single(self, action: Action) -> ActionResult:
         start = time.time()
         try:
+            if action.action not in {
+                ActionType.GOTO,
+                ActionType.BACK,
+                ActionType.FORWARD,
+                ActionType.PANEL_SHOW,
+                ActionType.PANEL_SET_FIELDS,
+                ActionType.PANEL_LOG,
+                ActionType.PANEL_PROMPT,
+            }:
+                self._login_guard.maybe_wait(f"before_{action.action}")
+
             if action.action == ActionType.CLICK:
                 self._click(action.ref or "")
             elif action.action == ActionType.FILL:
@@ -242,6 +263,16 @@ class ExploreExecutor:
                     f"未知操作类型: {action.action}",
                     ErrorCode.INVALID_FORMAT,
                 )
+
+            if action.action not in {
+                ActionType.PANEL_SHOW,
+                ActionType.PANEL_SET_FIELDS,
+                ActionType.PANEL_LOG,
+                ActionType.PANEL_PROMPT,
+                ActionType.SCREENSHOT,
+                ActionType.SNAPSHOT,
+            }:
+                self._login_guard.maybe_wait(f"after_{action.action}")
 
             return ActionResult(
                 action=action.action,

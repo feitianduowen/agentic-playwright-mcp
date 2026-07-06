@@ -996,6 +996,49 @@ class TestAgentLoop:
 
         assert result.success is True
 
+    def test_bootstrap_initial_page_opens_explicit_url_from_blank(self, mock_browser):
+        """Should navigate before the first observe when task contains a URL."""
+        _bm, page = mock_browser
+        page.url = "about:blank"
+
+        agent = AgentLoop(max_steps=3)
+        target = agent._bootstrap_initial_page("打开 https://example.com/dashboard")
+
+        assert target == "https://example.com/dashboard"
+        page.goto.assert_called_once_with(
+            "https://example.com/dashboard", wait_until="load"
+        )
+
+    def test_bootstrap_initial_page_opens_platform_entry_from_blank(self, mock_browser):
+        """Should use the target platform, not a platform mentioned inside the query."""
+        _bm, page = mock_browser
+        page.url = "about:blank"
+
+        agent = AgentLoop(max_steps=3)
+        target = agent._bootstrap_initial_page(
+            "帮我搜索在小红书上有哪些典型的人群，在知乎上。"
+        )
+
+        assert target == "https://www.zhihu.com/"
+        page.goto.assert_called_once_with("https://www.zhihu.com/", wait_until="load")
+
+    def test_resolve_initial_entry_uses_last_platform_phrase(self):
+        assert (
+            AgentLoop._resolve_initial_entry_url("帮我搜索怎么看知乎，在小红书上。")
+            == "https://www.xiaohongshu.com/"
+        )
+
+    def test_bootstrap_initial_page_keeps_existing_page(self, mock_browser):
+        """Should not overwrite a page the user already opened."""
+        _bm, page = mock_browser
+        page.url = "https://already-open.example/"
+
+        agent = AgentLoop(max_steps=3)
+        target = agent._bootstrap_initial_page("在知乎上搜索 Python")
+
+        assert target is None
+        page.goto.assert_not_called()
+
     def test_observe_uses_dom_explorer(self, mock_browser):
         """Should observe with a DOM summary before any vision fallback."""
         summary = DomPageSummary(
