@@ -82,6 +82,7 @@ class ExploreExecutor:
         self._current_snapshot: SnapshotResponse | None = None
         self._valid_refs: set[str] = set()
         self._ref_locator_cache: dict[str, Any] = {}
+        self._needs_snapshot = False
         self._login_guard = GenericLoginGuard(
             lambda: self._page,
             browser_manager=browser_manager,
@@ -94,6 +95,7 @@ class ExploreExecutor:
 
         results: list[ActionResult] = []
         try:
+            self._needs_snapshot = False
             batch = self._coerce_batch(batch)
             self._validate_batch(batch)
             self._validate_version(batch.actions)
@@ -111,6 +113,13 @@ class ExploreExecutor:
                         results=results,
                         error=result.error,
                         error_code=result.error_code,
+                    )
+                if self._needs_snapshot:
+                    return ExecutionResult(
+                        success=True,
+                        status="login_completed",
+                        results=results,
+                        need_snapshot=True,
                     )
 
             if terminator_idx is not None:
@@ -214,7 +223,15 @@ class ExploreExecutor:
                 ActionType.PANEL_LOG,
                 ActionType.PANEL_PROMPT,
             }:
-                self._login_guard.maybe_wait(f"before_{action.action}")
+                if self._login_guard.maybe_wait(f"before_{action.action}"):
+                    self._needs_snapshot = True
+                    return ActionResult(
+                        action=action.action,
+                        ref=action.ref,
+                        success=True,
+                        value="login_completed",
+                        duration_ms=int((time.time() - start) * 1000),
+                    )
 
             if action.action == ActionType.CLICK:
                 self._click(action.ref or "")
@@ -272,7 +289,8 @@ class ExploreExecutor:
                 ActionType.SCREENSHOT,
                 ActionType.SNAPSHOT,
             }:
-                self._login_guard.maybe_wait(f"after_{action.action}")
+                if self._login_guard.maybe_wait(f"after_{action.action}"):
+                    self._needs_snapshot = True
 
             return ActionResult(
                 action=action.action,

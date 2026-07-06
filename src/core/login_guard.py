@@ -27,12 +27,14 @@ class GenericLoginGuard:
         self._enabled = enabled
         self._waiting = False
 
-    def maybe_wait(self, action_name: str) -> None:
+    def maybe_wait(self, action_name: str) -> bool:
         if not self._enabled or self._waiting:
-            return
+            return False
         prompt = self._detect_login_prompt()
         if prompt.get("login_required"):
             self._wait_for_completion(action_name)
+            return True
+        return False
 
     @staticmethod
     def script_has_explicit_login_flow(script_code: str) -> bool:
@@ -206,6 +208,7 @@ class GenericLoginGuard:
     const rect = el.getBoundingClientRect();
     const style = window.getComputedStyle(el);
     const role = (el.getAttribute('role') || '').toLowerCase();
+    const tag = (el.tagName || '').toLowerCase();
     const className = String(el.className || '').toLowerCase();
     const ariaModal = el.getAttribute('aria-modal') === 'true';
     const z = Number.parseInt(style.zIndex || '0', 10) || 0;
@@ -214,11 +217,21 @@ class GenericLoginGuard:
       rect.left < window.innerWidth && rect.top < window.innerHeight;
     const fixedLayer = ['fixed', 'absolute', 'sticky'].includes(style.position) || z >= 10;
     const modalClass = /(modal|popup|dialog|overlay|mask|passport|login|auth|sign)/i.test(className);
+    const pageChrome = tag === 'header' || tag === 'nav' ||
+      /(header|navbar|nav-|topbar|toolbar|menu|sidebar|footer)/i.test(className);
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const centered = centerX > window.innerWidth * 0.2 &&
+      centerX < window.innerWidth * 0.8 &&
+      centerY > window.innerHeight * 0.15 &&
+      centerY < window.innerHeight * 0.85;
+    if (pageChrome) return false;
     return onScreen && (
       role === 'dialog' ||
       role === 'alertdialog' ||
       ariaModal ||
-      (largeEnough && (fixedLayer || modalClass))
+      (largeEnough && modalClass) ||
+      (largeEnough && fixedLayer && centered)
     );
   };
   const loginNodes = Array.from(document.querySelectorAll(
@@ -255,6 +268,16 @@ class GenericLoginGuard:
             }
         return {"success": False, "login_required": False}
 
+    def _is_page_closed(self, page: Any | None = None) -> bool:
+        try:
+            current_page = page or self._page()
+            is_closed = getattr(current_page, "is_closed", None)
+            if callable(is_closed):
+                return bool(is_closed())
+        except Exception:
+            return True
+        return False
+
     def _wait_for_completion(self, action_name: str) -> None:
         self._waiting = True
         try:
@@ -285,6 +308,8 @@ class GenericLoginGuard:
                 "zhihu",
             }
             while True:
+                if self._is_page_closed(page):
+                    raise RuntimeError("Page closed while waiting for manual login")
                 prompt_gone = not self._detect_login_prompt().get("login_required")
                 current_fingerprint = self._fingerprint()
                 known_logged_in = (
@@ -306,6 +331,14 @@ class GenericLoginGuard:
                         "Timed out waiting for manual login after detecting login popup"
                     )
 
-                page.wait_for_timeout(1000)
+                try:
+                    page.wait_for_timeout(1000)
+                except Exception as exc:
+                    message = str(exc)
+                    if "TargetClosed" in message or "closed" in message.lower():
+                        raise RuntimeError(
+                            "Page closed while waiting for manual login"
+                        ) from exc
+                    raise
         finally:
             self._waiting = False

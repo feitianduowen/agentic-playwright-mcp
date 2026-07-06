@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.core.login_guard import GenericLoginGuard
 from src.core.script_engine import (
     ScriptEngine,
     ScriptResult,
@@ -322,6 +323,40 @@ class TestBrowserPrimitives:
         assert result.success is True
         assert "login flow continues" in result.output
         page.wait_for_timeout.assert_not_called()
+
+    def test_generic_login_guard_reports_closed_page_cleanly(self):
+        class FakeContext:
+            def storage_state(self):
+                return {"cookies": [], "origins": []}
+
+        class FakePage:
+            url = "https://example.com"
+            context = FakeContext()
+
+            def __init__(self):
+                self.closed = False
+
+            def evaluate(self, code):
+                if "GENERIC_LOGIN_PROMPT_DETECTOR" in code:
+                    return {
+                        "success": True,
+                        "login_required": True,
+                        "url": self.url,
+                    }
+                return None
+
+            def wait_for_timeout(self, _milliseconds):
+                self.closed = True
+                raise RuntimeError("TargetClosedError: page closed")
+
+            def is_closed(self):
+                return self.closed
+
+        page = FakePage()
+        guard = GenericLoginGuard(lambda: page)
+
+        with pytest.raises(RuntimeError, match="Page closed while waiting"):
+            guard.maybe_wait("after_goto")
 
 
 # ---------------------------------------------------------------------------

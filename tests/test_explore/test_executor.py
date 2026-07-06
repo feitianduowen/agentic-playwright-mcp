@@ -216,7 +216,7 @@ def test_sequential_execution():
     assert page.calls == [("fill", "e2", "python"), ("click", "e1")]
 
 
-def test_login_popup_waits_for_cookie_before_continuing_explore_actions():
+def test_login_popup_waits_for_cookie_then_requests_new_snapshot():
     class FakeContext:
         def __init__(self):
             self.logged_in = False
@@ -286,11 +286,12 @@ def test_login_popup_waits_for_cookie_before_continuing_explore_actions():
     )
 
     assert result.success is True
+    assert result.status == "login_completed"
+    assert result.need_snapshot is True
     assert bm.saved_domains == ["example"]
     assert bm.page.calls == [
         ("goto", "https://example.com/protected", "load"),
         ("timeout", 1000),
-        ("fill", "e2", "python"),
     ]
 
 
