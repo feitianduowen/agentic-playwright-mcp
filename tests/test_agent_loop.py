@@ -15,6 +15,7 @@ from src.core.agent_loop import (
     run_task,
 )
 from src.core.dom_explorer import DomPageSummary, InteractiveElement
+from src.core.explore.models import AriaNode, SnapshotMode, SnapshotResponse
 from src.core.skill_router import SkillRouter
 from src.skill_library.registry import SkillRegistry
 
@@ -1219,6 +1220,50 @@ class TestAgentLoop:
         assert step.script == ""
         assert "进入 Explore 模式" in step.result
         page.goto.assert_not_called()
+
+    def test_explore_planner_accepts_single_action_object(self):
+        class FakeClient:
+            def chat_json(self, _prompt, **_kwargs):
+                return {
+                    "action": "click",
+                    "ref": "ask_button",
+                    "condition": "networkidle",
+                }
+
+        agent = AgentLoop(max_steps=3)
+        agent._llm_parser = SimpleNamespace(available=True, _client=FakeClient())
+        agent._last_explore_snapshot = SnapshotResponse(
+            version="snapshot_v1",
+            mode=SnapshotMode.COMPACT,
+            url="https://www.qianwen.com/",
+            title="千问-阿里 AI 助手",
+            nodes=[
+                AriaNode(
+                    role="button",
+                    name="搜索",
+                    ref="ask_button",
+                    tag="button",
+                )
+            ],
+            interactive_count=1,
+        )
+
+        batch = agent._plan_explore_actions("千问搜索 Python 入门")
+
+        assert batch is not None
+        assert len(batch.actions) == 1
+        assert batch.actions[0].action == "click"
+        assert batch.actions[0].ref == "ask_button"
+        assert batch.actions[0].snapshot_v == "snapshot_v1"
+
+    def test_explore_planner_accepts_bare_action_array(self):
+        assert AgentLoop._normalize_explore_action_batch_data(
+            [{"action": "fill", "ref": "input", "value": "Python 入门"}]
+        ) == {
+            "actions": [
+                {"action": "fill", "ref": "input", "value": "Python 入门"}
+            ]
+        }
 
     def test_observe_uses_dom_explorer(self, mock_browser):
         """Should observe with a DOM summary before any vision fallback."""

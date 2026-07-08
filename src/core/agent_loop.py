@@ -1651,7 +1651,6 @@ class AgentLoop:
             f"当前快照版本: {snapshot.version}\n"
             f"ARIA 快照:\n{json.dumps(snapshot.model_dump(mode='json'), ensure_ascii=False)}\n\n"
             "规则:\n"
-            "1. 优先使用快照中的 ref 操作元素。\n"
             "2. click/double_click/fill/select/check/uncheck/hover/drag/upload 必须填写 ref。\n"
             "3. fill/select/type/upload 必须填写 value。\n"
             "4. keyboard 的 value 是按键名（Enter, Escape, Tab, Control+a 等）。\n"
@@ -1667,7 +1666,7 @@ class AgentLoop:
             "使用 pause_for_input 暂停询问用户。pause_for_input 的 value 是问题文本，"
             "可用 [选项] 提供快捷选择；如需结构化输入可填写 fields。\n"
             "14. pause_for_input 应作为本批次最后一步。\n"
-            "15. 每个动作尽量填写 intent（意图）和 reasoning（推理）帮助调试。"
+            "15. 每个动作尽量填写 intent（意图）和 reasoning（推理）帮助调试。\n"
         )
         if self._last_panel_answer:
             prompt += f"\n\n上一次用户回答: {self._last_panel_answer}"
@@ -1680,6 +1679,7 @@ class AgentLoop:
                 temperature=0,
                 max_tokens=1024,
             )
+            data = self._normalize_explore_action_batch_data(data)
             batch = ActionBatch.model_validate(data)
         except Exception as exc:
             logger.warning("Explore planner failed: %s", exc)
@@ -1689,6 +1689,35 @@ class AgentLoop:
             if action.ref and not action.snapshot_v:
                 action.snapshot_v = snapshot.version
         return batch
+
+    @staticmethod
+    def _normalize_explore_action_batch_data(data: Any) -> Any:
+        """Accept common LLM shape drift while preserving the ActionBatch contract."""
+
+        if isinstance(data, list):
+            return {"actions": data}
+        if not isinstance(data, dict):
+            return data
+
+        if "actions" in data:
+            actions = data.get("actions")
+            if isinstance(actions, dict) and "action" in actions:
+                normalized = dict(data)
+                normalized["actions"] = [actions]
+                return normalized
+            return data
+
+        if "action" in data:
+            return {"actions": [data]}
+
+        for key in ("steps", "operations"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return {"actions": value, "task_id": data.get("task_id")}
+            if isinstance(value, dict) and "action" in value:
+                return {"actions": [value], "task_id": data.get("task_id")}
+
+        return data
 
     @staticmethod
     def _extract_login_credentials(task: str) -> tuple[str | None, str | None]:

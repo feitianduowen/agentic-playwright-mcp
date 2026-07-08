@@ -169,6 +169,13 @@ class ExploreExecutor:
     def _coerce_batch(self, batch: ActionBatch | dict[str, Any]) -> ActionBatch:
         if isinstance(batch, ActionBatch):
             return batch
+        if isinstance(batch, list):
+            batch = {"actions": batch}
+        elif isinstance(batch, dict):
+            if "actions" in batch and isinstance(batch.get("actions"), dict):
+                batch = {**batch, "actions": [batch["actions"]]}
+            elif "actions" not in batch and "action" in batch:
+                batch = {"actions": [batch]}
         try:
             return ActionBatch.model_validate(batch)
         except ValidationError as exc:

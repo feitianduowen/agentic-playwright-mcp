@@ -219,6 +219,15 @@ def test_sequential_execution():
     assert page.calls == [("fill", "e2", "python"), ("click", "e1")]
 
 
+def test_single_action_dict_is_coerced_to_batch():
+    executor, page = _executor()
+
+    result = executor.execute({"action": "click", "ref": "e1"})
+
+    assert result.success is True
+    assert page.calls == [("click", "e1")]
+
+
 def test_login_popup_waits_for_cookie_then_requests_new_snapshot():
     class FakeContext:
         def __init__(self):
