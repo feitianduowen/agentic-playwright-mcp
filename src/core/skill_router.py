@@ -288,6 +288,22 @@ class SkillRouter:
         pre_auth = self._build_pre_auth_script(skill)
         title_value = json.dumps(extracted.get("title", "-1"), ensure_ascii=False)
         keyword_value = json.dumps(extracted.get("keyword", "-1"), ensure_ascii=False)
+        add_picture_raw = str(extracted.get("add-picture", "false")).strip().lower()
+        add_picture_enabled = add_picture_raw in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+            "ai",
+            "add-picture",
+            "add_picture",
+            "配图",
+            "加图",
+            "加图片",
+            "生成图片",
+            "插入图片",
+        }
         title_ai_generate = bool(skill.params.get("title", {}).get("ai_generate", False))
         keyword_ai_generate = bool(
             skill.params.get("keyword", {}).get("ai_generate", False)
@@ -393,7 +409,7 @@ class SkillRouter:
             f"{pre_auth}"
             f"__param_keyword = __agentic_prepare_zhihu_content({keyword_value}, {keyword_ai_generate!r})\n"
             f"__param_title = __agentic_prepare_zhihu_title({title_value}, __param_keyword, {title_ai_generate!r})\n\n"
-            f"# 自动调用\nrun(title=__param_title, keyword=__param_keyword)"
+            f"# 自动调用\nrun(title=__param_title, keyword=__param_keyword, add_picture={add_picture_enabled!r})"
         )
 
     @staticmethod
@@ -521,6 +537,7 @@ class SkillRouter:
                 prompt,
                 schema=schema,
                 system_prompt="你是任务路由器。根据用户输入，从候选 skill 中选最匹配的一个。",
+                max_tokens=2048,
             )
         except Exception as exc:
             logger.warning("LLM 精排失败: %s", exc)
@@ -859,6 +876,7 @@ class SkillRouter:
                 prompt,
                 schema=schema,
                 system_prompt="You extract declared browser automation parameters and return only structured values.",
+                max_tokens=2048,
             )
         except Exception as exc:
             logger.warning("LLM param extraction failed: %s", exc)
@@ -1038,6 +1056,14 @@ class SkillRouter:
                     return style
 
         if ptype == "boolean":
+            if param_name in {"add-picture", "add_picture"}:
+                if re.search(
+                    r"(配图|加图|加图片|生成图片|插入图片|AI\s*配图|ai\s*picture|add[-_ ]?picture)",
+                    task,
+                    re.IGNORECASE,
+                ):
+                    return "true"
+                return "false"
             if re.search(r"(定时发布|定时|预约发布|scheduled)", task, re.IGNORECASE):
                 return "true"
             return "false"
