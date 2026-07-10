@@ -2,11 +2,33 @@
 
 from __future__ import annotations
 
+import ctypes
+import logging
+import subprocess
 import time
 from dataclasses import dataclass
 from os import environ
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+def _ensure_dpi_awareness() -> None:
+    try:
+        context = ctypes.c_void_p(-4)
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(context)
+        return
+    except Exception:
+        pass
+
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+_ensure_dpi_awareness()
 
 PIC_DIR = Path(__file__).resolve().parents[2] / "pic"
 WECHAT_APPEX_LOGO_TEMPLATE = "WeChatAppExLogo.png"
@@ -21,10 +43,18 @@ WECHAT_EXE_CANDIDATES = (
     r"C:\Program Files\Tencent\Weixin\Weixin.exe",
     r"C:\Program Files (x86)\Tencent\Weixin\Weixin.exe",
 )
+WECHAT_LAUNCH_NAMES = ("WeChat.exe", "Weixin.exe", "WeChat", "Weixin", "微信")
 WECHAT_PROCESS_NAMES = {"wechat.exe", "wechatappex.exe", "weixin.exe"}
 DEFAULT_WINDOW_RECT = (80, 60, 1200, 820)
-DEFAULT_APPEX_RECT = (120, 70, 1100, 820)
+DEFAULT_APPEX_RECT = DEFAULT_WINDOW_RECT
 CHAT_INPUT_REL = (0.58, 0.88)
+SEARCH_ACCOUNTS_TAB_REL = (0.24, 0.14)
+SEARCH_RESULT_REGION_SIZE = (1120, 680)
+SEARCH_RESULT_FIRST_ACCOUNT_OFFSET = (240, 240)
+SEARCH_RESULT_WINDOW_DETECT_SECONDS = 5.0
+SEARCH_ACCOUNTS_TAB_SETTLE_SECONDS = 5.0
+FOLLOW_CONFIRM_SECONDS = 20.0
+WECHAT_FOLLOW_BUTTON_RGB = (0x55, 0xBC, 0x7A)
 
 
 @dataclass(frozen=True)
@@ -59,13 +89,10 @@ class ScreenImageLocator:
         if not template_path.exists():
             return None
 
-        screenshot = self._screenshot_array()
-        if screenshot is None:
+        capture = self._capture_region(region)
+        if capture is None:
             return None
-
-        screen_h, screen_w = screenshot.shape[:2]
-        left, top, width, height = self._resolve_region(region, screen_w, screen_h)
-        crop = screenshot[top : top + height, left : left + width]
+        crop, left, top = capture
         if crop.size == 0:
             return None
 
@@ -136,6 +163,18 @@ class ScreenImageLocator:
         self._click_xy(match.x, match.y)
         return match
 
+    def click_first_result_green_text(
+        self,
+        *,
+        region: tuple[int, int, int, int] | str | None = None,
+        text: str = "",
+    ) -> ImageMatch | None:
+        match = self.find_first_result_green_text(region=region, text=text)
+        if match is None:
+            return None
+        self._click_xy(match.x, match.y)
+        return match
+
     def find_green_text(
         self,
         *,
@@ -147,31 +186,157 @@ class ScreenImageLocator:
         if cv2 is None or np is None:
             return None
 
-        screenshot = self._screenshot_array()
-        if screenshot is None:
+        capture = self._capture_region(region)
+        if capture is None:
             return None
-
-        screen_h, screen_w = screenshot.shape[:2]
-        left, top, width, height = self._resolve_region(region, screen_w, screen_h)
-        crop = screenshot[top : top + height, left : left + width]
+        crop, left, top = capture
         if crop.size == 0:
             return None
 
         try:
-            hsv = cv2.cvtColor(crop, cv2.COLOR_RGB2HSV)
-            lower = np.array([35, 35, 65])
-            upper = np.array([95, 255, 255])
-            mask = cv2.inRange(hsv, lower, upper)
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
-            grouped = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-            grouped = cv2.dilate(grouped, kernel, iterations=1)
-            contours, _ = cv2.findContours(
-                grouped,
-                cv2.RETR_EXTERNAL,
-                cv2.CHAIN_APPROX_SIMPLE,
-            )
+            candidates = self._green_text_candidates(cv2, np, crop)
         except Exception:
             return None
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: (item[1], item[0]))
+        x, y, w, h, density = candidates[0]
+        template_name = f"green_text:{text}" if text else "green_text"
+        return ImageMatch(
+            x=left + x + w // 2,
+            y=top + y + h // 2,
+            score=float(density),
+            template_name=template_name,
+        )
+
+    def find_first_result_green_text(
+        self,
+        *,
+        region: tuple[int, int, int, int] | str | None = None,
+        text: str = "",
+    ) -> ImageMatch | None:
+        cv2 = self._load_cv2()
+        np = self._load_numpy()
+        if cv2 is None or np is None:
+            return None
+
+        capture = self._capture_region(region)
+        if capture is None:
+            return None
+        crop, left, top = capture
+        if crop.size == 0:
+            return None
+
+        try:
+            candidates = self._green_text_candidates(cv2, np, crop)
+            cards = self._result_card_candidates(cv2, np, crop)
+        except Exception:
+            return None
+
+        for card_x, card_y, card_w, card_h in cards:
+            min_y = card_y + max(48, int(card_h * 0.28))
+            min_x = card_x + max(80, min(170, int(card_w * 0.12)))
+            max_y = card_y + int(card_h * 0.82)
+            in_card = [
+                item
+                for item in candidates
+                if item[0] >= min_x
+                and item[1] >= min_y
+                and item[1] <= max_y
+                and item[0] + item[2] <= card_x + card_w
+            ]
+            if not in_card:
+                continue
+            in_card.sort(key=lambda item: (item[1], item[0]))
+            x, y, w, h, density = in_card[0]
+            template_name = f"first_result_green_text:{text}" if text else "first_result_green_text"
+            return ImageMatch(
+                x=left + x + w // 2,
+                y=top + y + h // 2,
+                score=float(density),
+                template_name=template_name,
+            )
+
+        return self.find_green_text(region=region, text=text)
+
+    def find_green_button(
+        self,
+        *,
+        region: tuple[int, int, int, int] | str | None = None,
+        min_area: int = 900,
+    ) -> ImageMatch | None:
+        cv2 = self._load_cv2()
+        np = self._load_numpy()
+        if cv2 is None or np is None:
+            return None
+
+        capture = self._capture_region(region)
+        if capture is None:
+            return None
+        crop, left, top = capture
+        if crop.size == 0:
+            return None
+
+        try:
+            theme_rgb = np.array(WECHAT_FOLLOW_BUTTON_RGB, dtype=np.int16)
+            lower_rgb = np.array([45, 145, 85], dtype=np.uint8)
+            upper_rgb = np.array([135, 225, 170], dtype=np.uint8)
+            channel_mask = cv2.inRange(crop, lower_rgb, upper_rgb)
+            diff = crop.astype(np.int16) - theme_rgb
+            distance = np.sqrt(np.sum(diff * diff, axis=2))
+            theme_mask = (distance <= 65).astype(np.uint8) * 255
+            mask = cv2.bitwise_and(channel_mask, theme_mask)
+            raw_mask = mask.copy()
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+            mask = cv2.dilate(mask, kernel, iterations=1)
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        except Exception:
+            return None
+
+        candidates: list[tuple[float, int, int, int, int, int]] = []
+        for contour in contours:
+            area = int(cv2.contourArea(contour))
+            if area < min_area:
+                continue
+            x, y, w, h = cv2.boundingRect(contour)
+            if w < 48 or h < 20:
+                continue
+            ratio = w / max(1, h)
+            if ratio < 1.5 or ratio > 8:
+                continue
+            raw_roi = raw_mask[y : y + h, x : x + w]
+            density = cv2.countNonZero(raw_roi) / max(1, w * h)
+            if density < 0.45:
+                continue
+            candidates.append((density * area, area, x, y, w, h))
+
+        if not candidates:
+            return None
+        score, area, x, y, w, h = max(candidates, key=lambda item: (item[0], item[1]))
+        return ImageMatch(
+            x=left + x + w // 2,
+            y=top + y + h // 2,
+            score=float(score),
+            template_name="green_button",
+        )
+
+    @staticmethod
+    def _green_text_candidates(cv2: Any, np: Any, crop: Any) -> list[tuple[int, int, int, int, float]]:
+        hsv = cv2.cvtColor(crop, cv2.COLOR_RGB2HSV)
+        lower = np.array([35, 35, 65])
+        upper = np.array([95, 255, 255])
+        mask = cv2.inRange(hsv, lower, upper)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
+        grouped = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        grouped = cv2.dilate(grouped, kernel, iterations=1)
+        contours, _ = cv2.findContours(
+            grouped,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
 
         candidates: list[tuple[int, int, int, int, float]] = []
         for contour in contours:
@@ -187,75 +352,63 @@ class ScreenImageLocator:
             if density < 0.03 or density > 0.62:
                 continue
             candidates.append((x, y, w, h, density))
+        return candidates
 
-        if not candidates:
-            return None
+    @staticmethod
+    def _result_card_candidates(cv2: Any, np: Any, crop: Any) -> list[tuple[int, int, int, int]]:
+        gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+        card_mask = cv2.inRange(gray, 18, 42)
+        crop_h, crop_w = gray.shape[:2]
+        min_row_pixels = max(240, int(crop_w * 0.35))
+        rows = np.where(np.count_nonzero(card_mask, axis=1) >= min_row_pixels)[0]
+        if rows.size == 0:
+            return []
 
-        candidates.sort(key=lambda item: (item[1], item[0]))
-        x, y, w, h, density = candidates[0]
-        template_name = f"green_text:{text}" if text else "green_text"
-        return ImageMatch(
-            x=left + x + w // 2,
-            y=top + y + h // 2,
-            score=float(density),
-            template_name=template_name,
-        )
+        bands: list[tuple[int, int]] = []
+        start = prev = int(rows[0])
+        for row in rows[1:]:
+            current = int(row)
+            if current > prev + 4:
+                if prev - start >= 70:
+                    bands.append((start, prev))
+                start = current
+            prev = current
+        if prev - start >= 70:
+            bands.append((start, prev))
 
-    def find_green_button(
-        self,
-        *,
-        region: tuple[int, int, int, int] | str | None = None,
-        min_area: int = 900,
-    ) -> ImageMatch | None:
-        cv2 = self._load_cv2()
-        np = self._load_numpy()
-        if cv2 is None or np is None:
-            return None
-
-        screenshot = self._screenshot_array()
-        if screenshot is None:
-            return None
-
-        screen_h, screen_w = screenshot.shape[:2]
-        left, top, width, height = self._resolve_region(region, screen_w, screen_h)
-        crop = screenshot[top : top + height, left : left + width]
-        if crop.size == 0:
-            return None
-
-        try:
-            hsv = cv2.cvtColor(crop, cv2.COLOR_RGB2HSV)
-            lower = np.array([35, 45, 80])
-            upper = np.array([95, 255, 255])
-            mask = cv2.inRange(hsv, lower, upper)
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        except Exception:
-            return None
-
-        candidates: list[tuple[int, int, int, int, int]] = []
-        for contour in contours:
-            area = int(cv2.contourArea(contour))
-            if area < min_area:
+        cards: list[tuple[int, int, int, int]] = []
+        for band_top, band_bottom in bands:
+            band_height = band_bottom - band_top + 1
+            if band_top < 36 and band_height < 90:
                 continue
-            x, y, w, h = cv2.boundingRect(contour)
-            if w < 48 or h < 20:
+            band = card_mask[band_top : band_bottom + 1]
+            col_counts = np.count_nonzero(band, axis=0)
+            cols = np.where(col_counts >= max(20, int(band_height * 0.35)))[0]
+            if cols.size == 0:
                 continue
-            ratio = w / max(1, h)
-            if ratio < 1.5 or ratio > 8:
+            left = int(cols[0])
+            right = int(cols[-1])
+            width = right - left + 1
+            if width < 240:
                 continue
-            candidates.append((area, x, y, w, h))
-
-        if not candidates:
-            return None
-        area, x, y, w, h = max(candidates, key=lambda item: item[0])
-        return ImageMatch(
-            x=left + x + w // 2,
-            y=top + y + h // 2,
-            score=float(area),
-            template_name="green_button",
-        )
+            cards.append((left, band_top, width, band_height))
+        return sorted(cards, key=lambda item: (item[1], item[0]))
 
     def click_xy(self, x: int, y: int) -> None:
         self._click_xy(x, y)
+
+    def click_relative(
+        self,
+        region: tuple[int, int, int, int],
+        rx: float,
+        ry: float,
+    ) -> bool:
+        normalized = self._coerce_region(region)
+        if normalized is None:
+            return False
+        left, top, width, height = normalized
+        self._click_xy(left + int(width * rx), top + int(height * ry))
+        return True
 
     @staticmethod
     def taskbar_region_for_size(width: int, height: int) -> tuple[int, int, int, int]:
@@ -280,6 +433,43 @@ class ScreenImageLocator:
         height = max(0, min(screen_h - top, int(height)))
         return (left, top, width, height)
 
+    def _capture_region(
+        self,
+        region: tuple[int, int, int, int] | str | None,
+    ) -> tuple[Any, int, int] | None:
+        if isinstance(region, tuple):
+            normalized = self._coerce_region(region)
+            if normalized is None:
+                return None
+            left, top, _width, _height = normalized
+            screenshot = self._screenshot_array(normalized)
+            if screenshot is None:
+                return None
+            return screenshot, left, top
+
+        screenshot = self._screenshot_array()
+        if screenshot is None:
+            return None
+
+        screen_h, screen_w = screenshot.shape[:2]
+        left, top, width, height = self._resolve_region(region, screen_w, screen_h)
+        crop = screenshot[top : top + height, left : left + width]
+        return crop, left, top
+
+    @staticmethod
+    def _coerce_region(
+        region: tuple[int, int, int, int] | None,
+    ) -> tuple[int, int, int, int] | None:
+        if region is None:
+            return None
+        try:
+            left, top, width, height = (int(value) for value in region)
+        except Exception:
+            return None
+        if width <= 0 or height <= 0:
+            return None
+        return max(0, left), max(0, top), width, height
+
     @staticmethod
     def _load_cv2() -> Any | None:
         try:
@@ -298,21 +488,35 @@ class ScreenImageLocator:
         except Exception:
             return None
 
-    def _screenshot_array(self) -> Any | None:
+    def _screenshot_array(
+        self,
+        region: tuple[int, int, int, int] | None = None,
+    ) -> Any | None:
         np = self._load_numpy()
         if np is None:
             return None
+
+        normalized_region = self._coerce_region(region)
+        bbox = None
+        if region is not None:
+            if normalized_region is None:
+                return None
+            left, top, width, height = normalized_region
+            bbox = (left, top, left + width, top + height)
 
         image = None
         try:
             from PIL import ImageGrab  # type: ignore[import-not-found]
 
-            image = ImageGrab.grab()
+            image = ImageGrab.grab(bbox=bbox)
         except Exception:
             try:
                 import pyautogui  # type: ignore[import-not-found]
 
-                image = pyautogui.screenshot()
+                if normalized_region is None:
+                    image = pyautogui.screenshot()
+                else:
+                    image = pyautogui.screenshot(region=normalized_region)
             except Exception:
                 return None
 
@@ -402,6 +606,7 @@ class WeChatWindowManager:
                 process_name = PywinautoWechatAutomation._window_process_name(window)
                 if process_name != "wechatappex.exe":
                     continue
+                self.normalize(window, app_ex=True, focus=False)
                 handle = PywinautoWechatAutomation._window_handle(window)
                 if handle not in before_handles:
                     return window
@@ -412,22 +617,73 @@ class WeChatWindowManager:
             time.sleep(0.25)
         return fallback
 
-    def normalize(self, window: Any, *, app_ex: bool = False) -> Any:
+    def normalize(self, window: Any, *, app_ex: bool = False, focus: bool = True) -> Any:
         x, y, width, height = self._target_rect(app_ex=app_ex)
-        try:
-            window.restore()
-        except Exception:
-            pass
-        try:
-            window.move_window(x=x, y=y, width=width, height=height, repaint=True)
-        except Exception:
-            pass
-        try:
-            window.set_focus()
-        except Exception:
-            pass
+        move_error: Exception | None = None
+        moved = self._set_window_pos(window, x, y, width, height)
+        if not moved:
+            try:
+                window.restore()
+            except Exception:
+                pass
+            try:
+                window.move_window(x=x, y=y, width=width, height=height, repaint=True)
+                moved = True
+            except Exception as exc:
+                move_error = exc
+        if not moved:
+            logger.warning(
+                "Failed to move WeChat window to left half "
+                "title=%r process=%r rect=(%s,%s,%s,%s): %s",
+                PywinautoWechatAutomation._element_text(window),
+                PywinautoWechatAutomation._window_process_name(window),
+                x,
+                y,
+                width,
+                height,
+                move_error or "SetWindowPos returned false",
+            )
+        if focus:
+            try:
+                window.set_focus()
+            except Exception:
+                pass
         time.sleep(0.2)
         return window
+
+    def normalize_all(self, *, active_window: Any | None = None) -> None:
+        for window in self.list_windows():
+            process_name = PywinautoWechatAutomation._window_process_name(window)
+            self.normalize(
+                window,
+                app_ex=process_name == "wechatappex.exe",
+                focus=active_window is not None and window is active_window,
+            )
+
+    @staticmethod
+    def _set_window_pos(window: Any, x: int, y: int, width: int, height: int) -> bool:
+        hwnd = PywinautoWechatAutomation._window_handle(window)
+        if not hwnd:
+            return False
+        try:
+            user32 = ctypes.windll.user32
+            sw_restore = 9
+            swp_nozorder = 0x0004
+            swp_noactivate = 0x0010
+            user32.ShowWindow(int(hwnd), sw_restore)
+            return bool(
+                user32.SetWindowPos(
+                    int(hwnd),
+                    0,
+                    int(x),
+                    int(y),
+                    int(width),
+                    int(height),
+                    swp_nozorder | swp_noactivate,
+                )
+            )
+        except Exception:
+            return False
 
     def _target_rect(self, *, app_ex: bool = False) -> tuple[int, int, int, int]:
         try:
@@ -576,6 +832,7 @@ class PywinautoWechatAutomation:
         self.window_manager: WeChatWindowManager | None = None
         self.locator = ElementLocator(timeout=8.0)
         self.image_locator = image_locator or ScreenImageLocator()
+        self._last_search_result_anchor: ImageMatch | None = None
 
     def open(self) -> None:
         try:
@@ -590,27 +847,16 @@ class PywinautoWechatAutomation:
         self.window_manager = WeChatWindowManager(self.desktop)
         self.window = self.window_manager.find_main_window()
         if self.window is not None:
-            self.window = self.window_manager.normalize(self.window)
+            self._normalize_current_window()
             return
 
-        if self._activate_main_from_taskbar(timeout=3.0):
-            deadline = time.time() + self.wait_timeout
-            while time.time() < deadline:
-                self.window = self.window_manager.find_main_window()
-                if self.window is not None:
-                    self.window = self.window_manager.normalize(self.window)
-                    return
-                time.sleep(0.5)
+        if self._launch_wechat_by_name(Application):
+            return
 
         exe_path = self._resolve_executable()
         self.app = Application(backend="uia").start(str(exe_path))
-        deadline = time.time() + self.wait_timeout
-        while time.time() < deadline:
-            self.window = self.window_manager.find_main_window()
-            if self.window is not None:
-                self.window = self.window_manager.normalize(self.window)
-                return
-            time.sleep(0.5)
+        if self._wait_for_main_window(timeout=self.wait_timeout):
+            return
         raise RuntimeError("Unable to find WeChat window after launch")
 
     def search_official_account(self, account_name: str) -> None:
@@ -626,8 +872,20 @@ class PywinautoWechatAutomation:
             self._send_keys("{ENTER}")
             clicked_global_search = self._click_souyisou_if_visible(timeout=1.2)
         if clicked_global_search:
-            self._switch_to_account_window(account_name, before_handles=before_handles)
-        time.sleep(1.5)
+            if not self._wait_for_search_result_window(
+                account_name,
+                before_handles=before_handles,
+                wait_seconds=SEARCH_RESULT_WINDOW_DETECT_SECONDS,
+            ):
+                raise RuntimeError("Unable to activate WeChatAppEx search result window")
+            self._click_search_accounts_tab(timeout=3.0)
+            if self._click_first_account_result_after_tab(
+                account_name,
+                before_handles=before_handles,
+            ):
+                return
+        else:
+            time.sleep(1.5)
         self._click_service_account_result(account_name, before_handles=before_handles)
 
     def search_contact(self, contact_name: str) -> None:
@@ -645,35 +903,17 @@ class PywinautoWechatAutomation:
         self._normalize_current_window()
         if self._needs_official_account_home_confirmation() and not self._wait_for_official_account_home(timeout=8.0):
             return False
-        target = self._wait_for_text_target(
-            title_patterns=(
-                r".*关注.*",
-                r".*Follow.*",
-                r".*Subscribe.*",
-            ),
-            timeout=10.0,
-        )
+        deadline = time.time() + FOLLOW_CONFIRM_SECONDS
         clicked_follow = False
-        if target is None:
-            clicked_follow = self._click_green_follow_button(timeout=3.0)
-        else:
-            self._click_element_or_parent(target)
-            clicked_follow = True
-            time.sleep(0.8)
-
-        enter_target = self._wait_for_text_target(
-            title_patterns=(
-                r".*进入公众号.*",
-                r".*发消息.*",
-                r".*发送消息.*",
-                r".*Message.*",
-            ),
-            timeout=1.0,
-        )
-        if enter_target is not None:
-            self._click_element_or_parent(enter_target)
-            time.sleep(0.8)
-        return clicked_follow
+        while time.time() < deadline:
+            if self._is_followed_state():
+                return True
+            if self._click_follow_button_visual(timeout=1.0):
+                clicked_follow = True
+                time.sleep(1.0)
+                continue
+            time.sleep(0.5)
+        return clicked_follow and self._is_followed_state()
 
     def send_message(self, message: str) -> None:
         self._require_window()
@@ -684,11 +924,11 @@ class PywinautoWechatAutomation:
         elif self._click_message_box_visual(timeout=2.0):
             pass
         else:
-            self._click_relative(self.window, *CHAT_INPUT_REL)
+            if not self._click_window_relative(*CHAT_INPUT_REL):
+                self._click_relative(self.window, *CHAT_INPUT_REL)
         self._paste_or_type(message)
         time.sleep(0.2)
-        if not self._click_send_button_visual(timeout=1.5):
-            self._send_keys("{ENTER}")
+        self._send_keys("{ENTER}")
         time.sleep(0.5)
 
     def _resolve_executable(self) -> Path:
@@ -701,6 +941,49 @@ class PywinautoWechatAutomation:
             if path.exists():
                 return path
         raise FileNotFoundError("Unable to locate WeChat.exe")
+
+    def _launch_wechat_by_name(self, application_cls: Any) -> bool:
+        for launch_name in WECHAT_LAUNCH_NAMES:
+            try:
+                self.app = application_cls(backend="uia").start(launch_name)
+            except Exception:
+                logger.debug(
+                    "Failed to start WeChat by name with pywinauto: %s",
+                    launch_name,
+                    exc_info=True,
+                )
+            if self._wait_for_main_window(timeout=2.0):
+                return True
+
+            if self._shell_start_by_name(launch_name) and self._wait_for_main_window(timeout=2.0):
+                return True
+        return False
+
+    @staticmethod
+    def _shell_start_by_name(launch_name: str) -> bool:
+        try:
+            subprocess.Popen(  # noqa: S603,S607
+                ["cmd", "/c", "start", "", launch_name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return True
+        except Exception:
+            logger.debug("Failed to shell-start WeChat by name: %s", launch_name, exc_info=True)
+            return False
+
+    def _wait_for_main_window(self, *, timeout: float) -> bool:
+        deadline = time.time() + max(0.0, timeout)
+        while time.time() < deadline:
+            if self.window_manager is None:
+                return False
+            self.window = self.window_manager.find_main_window()
+            if self.window is not None:
+                self._normalize_current_window()
+                return True
+            time.sleep(0.5)
+        return False
 
     def _candidate_executable_paths(self) -> list[Path]:
         candidates: list[Path] = [Path(candidate) for candidate in WECHAT_EXE_CANDIDATES]
@@ -910,6 +1193,19 @@ class PywinautoWechatAutomation:
             self.window,
             app_ex=self._window_process_name(self.window) == "wechatappex.exe",
         )
+        manager.normalize_all(active_window=self.window)
+
+    def _normalize_windows_for_screenshot(self) -> None:
+        manager = self._get_window_manager(create=False)
+        if manager is not None:
+            manager.normalize_all(active_window=self.window)
+            return
+        if self.window is None:
+            return
+        try:
+            self.window.set_focus()
+        except Exception:
+            pass
 
     def _get_window_manager(self, *, create: bool = True) -> WeChatWindowManager | None:
         if self.window_manager is not None:
@@ -1260,6 +1556,7 @@ class PywinautoWechatAutomation:
         if locator is None or not hasattr(locator, "find"):
             return False
         try:
+            self._normalize_windows_for_screenshot()
             match = locator.find(
                 WECHAT_OFFICIAL_ACCOUNT_TEMPLATE,
                 region=self._current_window_region(),
@@ -1300,6 +1597,7 @@ class PywinautoWechatAutomation:
         deadline = time.time() + max(0.0, timeout)
         while True:
             try:
+                self._normalize_windows_for_screenshot()
                 match = locator.click_green_button(region=self._current_window_region())
             except Exception:
                 return False
@@ -1310,10 +1608,40 @@ class PywinautoWechatAutomation:
                 return False
             time.sleep(0.2)
 
+    def _click_follow_button_visual(self, *, timeout: float = 2.0) -> bool:
+        return self._click_green_follow_button(timeout=timeout)
+
+    def _is_followed_state(self) -> bool:
+        for window in self._windows_to_scan():
+            combined = self._combined_text(window)
+            if "已关注" in combined and any(
+                marker in combined
+                for marker in ("私信", "发消息", "发送消息", "Message")
+            ):
+                self.window = window
+                return True
+        return False
+
+    def _find_follow_button_target(self) -> Any | None:
+        self._require_window()
+        for window in self._windows_to_scan():
+            try:
+                items = window.descendants()
+            except Exception:
+                items = []
+            for item in items:
+                title = self._element_text(item).strip()
+                if not title or "已关注" in title:
+                    continue
+                if title in {"关注", "Follow", "Subscribe"}:
+                    self.window = window
+                    return item
+        return None
+
     def _click_message_box_visual(self, *, timeout: float = 2.0) -> bool:
         return self._click_screen_template(
             WECHAT_MESSAGE_BOX_TEMPLATE,
-            region=self._current_window_region(),
+            current_window_region=True,
             threshold=0.72,
             timeout=timeout,
         )
@@ -1321,23 +1649,33 @@ class PywinautoWechatAutomation:
     def _click_send_button_visual(self, *, timeout: float = 1.5) -> bool:
         return self._click_screen_template(
             WECHAT_SEND_BUTTON_TEMPLATE,
-            region=self._current_window_region(),
+            current_window_region=True,
             threshold=0.74,
             timeout=timeout,
         )
 
     def _click_green_account_text(self, account_name: str, *, timeout: float = 0.8) -> bool:
         locator = getattr(self, "image_locator", None)
-        if locator is None or not hasattr(locator, "click_green_text"):
+        if locator is None or not (
+            hasattr(locator, "click_green_text") or hasattr(locator, "click_first_result_green_text")
+        ):
             return False
 
         deadline = time.time() + max(0.0, timeout)
         while True:
             try:
-                match = locator.click_green_text(
-                    region=self._current_window_region(),
-                    text=account_name,
-                )
+                self._normalize_windows_for_screenshot()
+                region = self._search_result_region() or self._current_window_region()
+                if hasattr(locator, "click_first_result_green_text"):
+                    match = locator.click_first_result_green_text(
+                        region=region,
+                        text=account_name,
+                    )
+                else:
+                    match = locator.click_green_text(
+                        region=region,
+                        text=account_name,
+                    )
             except Exception:
                 return False
             if match is not None:
@@ -1347,11 +1685,101 @@ class PywinautoWechatAutomation:
                 return False
             time.sleep(0.2)
 
+    def _click_search_accounts_tab(self, *, timeout: float = 3.0) -> bool:
+        deadline = time.time() + max(0.0, timeout)
+        while True:
+            target = self._find_search_accounts_tab()
+            if target is not None:
+                self._click_element_or_parent(target)
+                time.sleep(SEARCH_ACCOUNTS_TAB_SETTLE_SECONDS)
+                return True
+            if time.time() >= deadline:
+                break
+            time.sleep(0.2)
+        clicked = self._click_window_relative(*SEARCH_ACCOUNTS_TAB_REL)
+        if clicked:
+            time.sleep(SEARCH_ACCOUNTS_TAB_SETTLE_SECONDS)
+        return clicked
+
+    def _find_search_accounts_tab(self) -> Any | None:
+        self._require_window()
+        try:
+            items = self.window.descendants()
+        except Exception:
+            return None
+        for item in items:
+            title = self._element_text(item).strip()
+            if title in {"账号", "Account", "Accounts"}:
+                return item
+        return None
+
+    def _click_first_account_result_after_tab(
+        self,
+        account_name: str,
+        *,
+        before_handles: set[int] | None,
+    ) -> bool:
+        if self._click_green_account_text(account_name, timeout=1.2):
+            if self._confirm_after_search_result_click(
+                account_name,
+                before_handles=before_handles,
+            ):
+                return True
+
+        text_target = self._find_account_name_result(account_name)
+        if text_target is not None:
+            self._click_element_or_parent(text_target)
+            if self._confirm_after_search_result_click(
+                account_name,
+                before_handles=before_handles,
+            ):
+                return True
+
+        if self._click_first_search_result_visual():
+            return self._confirm_after_search_result_click(
+                account_name,
+                before_handles=before_handles,
+            )
+        return False
+
+    def _find_search_result_anchor(self, *, timeout: float = 0.8) -> ImageMatch | None:
+        locator = getattr(self, "image_locator", None)
+        if locator is None or not hasattr(locator, "find"):
+            return self._last_search_result_anchor
+
+        deadline = time.time() + max(0.0, timeout)
+        while True:
+            try:
+                self._normalize_windows_for_screenshot()
+                match = locator.find(
+                    WECHAT_SEARCH_TEMPLATE,
+                    region=None,
+                    threshold=0.72,
+                )
+            except Exception:
+                match = None
+            if match is not None and hasattr(match, "x") and hasattr(match, "y"):
+                self._last_search_result_anchor = match
+                return match
+            if time.time() >= deadline:
+                return self._last_search_result_anchor
+            time.sleep(0.2)
+
+    def _search_result_region(self) -> tuple[int, int, int, int] | None:
+        anchor = self._find_search_result_anchor(timeout=0.3)
+        if anchor is None:
+            return None
+        width, height = SEARCH_RESULT_REGION_SIZE
+        left = max(0, int(anchor.x - 70))
+        top = max(0, int(anchor.y - 70))
+        return left, top, width, height
+
     def _click_screen_template(
         self,
         template_name: str,
         *,
         region: tuple[int, int, int, int] | str | None = None,
+        current_window_region: bool = False,
         threshold: float = 0.78,
         timeout: float = 1.5,
     ) -> bool:
@@ -1362,9 +1790,11 @@ class PywinautoWechatAutomation:
         deadline = time.time() + max(0.0, timeout)
         while True:
             try:
+                self._normalize_windows_for_screenshot()
+                target_region = self._current_window_region() if current_window_region else region
                 match = locator.click(
                     template_name,
-                    region=region,
+                    region=target_region,
                     threshold=threshold,
                 )
             except Exception:
@@ -1381,18 +1811,60 @@ class PywinautoWechatAutomation:
         if locator is None or not hasattr(locator, "click_xy"):
             return False
 
+        anchor = self._find_search_result_anchor(timeout=0.5)
+        if anchor is not None:
+            offset_x, offset_y = SEARCH_RESULT_FIRST_ACCOUNT_OFFSET
+            x = int(anchor.x + offset_x)
+            y = int(anchor.y + offset_y)
+            try:
+                locator.click_xy(x, y)
+            except Exception:
+                return False
+            time.sleep(0.35)
+            return True
+        return self._click_window_relative(0.19, 0.39)
+
+    def _click_window_relative(self, rx: float, ry: float) -> bool:
+        self._normalize_windows_for_screenshot()
         region = self._current_window_region()
         if region is None:
             return False
-        left, top, width, height = region
-        x = left + int(width * 0.42)
-        y = top + int(height * 0.24)
+        locator = getattr(self, "image_locator", None)
+        if locator is not None and hasattr(locator, "click_relative"):
+            try:
+                if locator.click_relative(region, rx, ry):
+                    time.sleep(0.35)
+                    return True
+            except Exception:
+                pass
         try:
-            locator.click_xy(x, y)
+            self._click_relative(self.window, rx, ry)
         except Exception:
             return False
         time.sleep(0.35)
         return True
+
+    def _wait_for_search_result_window(
+        self,
+        account_name: str,
+        *,
+        before_handles: set[int] | None,
+        wait_seconds: float,
+    ) -> bool:
+        deadline = time.time() + max(0.0, wait_seconds)
+        while True:
+            remaining = max(0.0, deadline - time.time())
+            if self._switch_to_account_window(
+                account_name,
+                timeout=min(1.0, max(0.1, remaining)),
+                before_handles=before_handles,
+            ):
+                return True
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.5, remaining))
+        return False
 
     def _current_window_region(self) -> tuple[int, int, int, int] | None:
         try:
@@ -1416,6 +1888,7 @@ class PywinautoWechatAutomation:
             )
             if new_appex is not None:
                 self.window = manager.normalize(new_appex, app_ex=True)
+                manager.normalize_all(active_window=self.window)
                 return True
 
         desktop = self._get_desktop(create=False)
@@ -1432,6 +1905,7 @@ class PywinautoWechatAutomation:
                 )
                 if new_appex is not None:
                     self.window = manager.normalize(new_appex, app_ex=True)
+                    manager.normalize_all(active_window=self.window)
                     return True
 
         deadline = time.time() + timeout
@@ -1450,6 +1924,8 @@ class PywinautoWechatAutomation:
                         if manager is not None
                         else window
                     )
+                    if manager is not None:
+                        manager.normalize_all(active_window=self.window)
                     return True
                 if has_account_hint:
                     fallback = window
@@ -1459,6 +1935,8 @@ class PywinautoWechatAutomation:
                     if manager is not None
                     else fallback
                 )
+                if manager is not None:
+                    manager.normalize_all(active_window=self.window)
                 return True
             time.sleep(0.3)
         if fallback is not None:
@@ -1467,6 +1945,8 @@ class PywinautoWechatAutomation:
                 if manager is not None
                 else fallback
             )
+            if manager is not None:
+                manager.normalize_all(active_window=self.window)
             return True
         return False
 
