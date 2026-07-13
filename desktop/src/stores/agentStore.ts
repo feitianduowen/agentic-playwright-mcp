@@ -69,7 +69,7 @@ async function loadConversationSnapshot(conversationId: string) {
     apiRequest<TaskSummary[]>(`/api/tasks?conversation_id=${encodeURIComponent(conversationId)}`)
   ]);
   const activeTask = activeTaskFrom(tasks);
-  return { messages, activeTask, visualState: visualStateFor(activeTask) };
+  return { messages: dedupe(messages), activeTask, visualState: visualStateFor(activeTask) };
 }
 
 async function stopConversationResources(conversationId: string): Promise<void> {
@@ -90,7 +90,25 @@ async function stopConversationResources(conversationId: string): Promise<void> 
 function dedupe(messages: ChatMessage[]): ChatMessage[] {
   const map = new Map<string, ChatMessage>();
   for (const message of messages) map.set(message.id, message);
-  return Array.from(map.values()).sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const unique = Array.from(map.values());
+  const taskAnchors = new Map<string, string>();
+  for (const message of unique) {
+    if (!message.task_id) continue;
+    const current = taskAnchors.get(message.task_id);
+    if (!current || message.created_at < current) taskAnchors.set(message.task_id, message.created_at);
+  }
+  return unique.sort((a, b) => {
+    const anchorA = a.task_id ? taskAnchors.get(a.task_id) || a.created_at : a.created_at;
+    const anchorB = b.task_id ? taskAnchors.get(b.task_id) || b.created_at : b.created_at;
+    const anchorOrder = anchorA.localeCompare(anchorB);
+    if (anchorOrder) return anchorOrder;
+    if (a.task_id && a.task_id === b.task_id) return a.created_at.localeCompare(b.created_at);
+    return a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id);
+  });
+}
+
+function eventBelongsToCurrentTask(event: BackendEvent, currentTaskId: string | null): boolean {
+  return !event.task_id || !currentTaskId || event.task_id === currentTaskId;
 }
 
 async function connectEvents(handle: (event: BackendEvent) => void, setConnected: (value: boolean) => void) {
@@ -372,6 +390,10 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       await get().createConversation();
       conversationId = get().currentConversationId;
     }
+    if (get().currentTaskId && conversationId) {
+      await stopConversationResources(conversationId);
+      set({ currentTaskId: null, visualState: "idle", confirmations: [] });
+    }
     const optimistic: ChatMessage = {
       id: `optimistic_${Date.now()}`,
       conversation_id: conversationId!,
@@ -385,7 +407,12 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       method: "POST",
       body: JSON.stringify({ conversation_id: conversationId, content: trimmed, attachments: [] })
     });
-    set({ currentTaskId: task.id });
+    set((state) => ({
+      currentTaskId: task.id,
+      messages: dedupe(state.messages.map((message) => message.id === optimistic.id
+        ? { ...message, task_id: task.id }
+        : message))
+    }));
   },
 
   approveConfirmation: async (id, value = "", actionId = "approve", comment = "") => {
@@ -414,18 +441,27 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     const state = get();
     if (event.conversation_id && state.currentConversationId && event.conversation_id !== state.currentConversationId) return;
     if (event.type === "agent_state_changed") {
+      if (!eventBelongsToCurrentTask(event, state.currentTaskId)) return;
       set({ visualState: event.payload.state as AgentVisualState });
       return;
     }
+    if (event.type === "task_created") {
+      if (!eventBelongsToCurrentTask(event, state.currentTaskId)) return;
+      set({ currentTaskId: event.task_id || null, visualState: "running" });
+      return;
+    }
     if (event.type === "task_started") {
+      if (!eventBelongsToCurrentTask(event, state.currentTaskId)) return;
       set({ currentTaskId: event.task_id || null, visualState: "running" });
       return;
     }
     if (event.type === "task_cancelled") {
+      if (!eventBelongsToCurrentTask(event, state.currentTaskId)) return;
       set({ currentTaskId: null, visualState: "idle" });
       return;
     }
     if (event.type === "task_succeeded" || event.type === "task_failed") {
+      if (!eventBelongsToCurrentTask(event, state.currentTaskId)) return;
       set({ currentTaskId: null });
     }
     if (event.type === "assistant_message") {

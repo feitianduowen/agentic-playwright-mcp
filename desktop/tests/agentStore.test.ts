@@ -112,14 +112,35 @@ test("remote conversation selection restores its running task without stopping r
     { id: "conversation-a", title: "A", created_at: "1", updated_at: "1" },
     { id: "conversation-b", title: "B", created_at: "1", updated_at: "2" }
   ];
-  const messages: ChatMessage[] = [{
-    id: "message-b",
-    conversation_id: "conversation-b",
-    role: "user",
-    type: "user",
-    content: "运行中的任务",
-    created_at: "1"
-  }];
+  const messages: ChatMessage[] = [
+    {
+      id: "old-user",
+      conversation_id: "conversation-b",
+      task_id: "task-old",
+      role: "user",
+      type: "user",
+      content: "旧任务",
+      created_at: "1"
+    },
+    {
+      id: "message-b",
+      conversation_id: "conversation-b",
+      task_id: "task-b",
+      role: "user",
+      type: "user",
+      content: "运行中的任务",
+      created_at: "2"
+    },
+    {
+      id: "old-answer",
+      conversation_id: "conversation-b",
+      task_id: "task-old",
+      role: "assistant",
+      type: "assistant",
+      content: "迟到的旧任务回答",
+      created_at: "3"
+    }
+  ];
   const calls: string[] = [];
   globalThis.fetch = (async (input: string | URL | Request) => {
     const url = String(input);
@@ -147,7 +168,10 @@ test("remote conversation selection restores its running task without stopping r
   assert.equal(useAgentStore.getState().currentConversationId, "conversation-b");
   assert.equal(useAgentStore.getState().currentTaskId, "task-b");
   assert.equal(useAgentStore.getState().visualState, "running");
-  assert.deepEqual(useAgentStore.getState().messages, messages);
+  assert.deepEqual(
+    useAgentStore.getState().messages.map((message) => message.id),
+    ["old-user", "old-answer", "message-b"]
+  );
   assert.equal(calls.some((url) => url.includes("/api/browser/close")), false);
 });
 
@@ -198,4 +222,114 @@ test("confirmation cancellation can target its own task", async () => {
 
   assert.equal(calls.length, 1);
   assert.match(calls[0], /POST .*\/api\/tasks\/task-confirmation\/cancel$/);
+});
+
+test("starting a new task stops the previous task and closes its browser first", async () => {
+  installDesktopBridge();
+  const calls: string[] = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    calls.push(`${init?.method || "GET"} ${url}`);
+    if (url.includes("/api/tasks?conversation_id=conversation-a")) {
+      return jsonResponse([{ id: "task-old", conversation_id: "conversation-a", status: "running" }]);
+    }
+    if (url.endsWith("/api/tasks") && init?.method === "POST") return jsonResponse({ id: "task-new" });
+    return jsonResponse({ ok: true });
+  }) as typeof fetch;
+  useAgentStore.setState({
+    currentConversationId: "conversation-a",
+    currentTaskId: "task-old",
+    visualState: "running",
+    messages: [],
+    confirmations: []
+  });
+
+  await useAgentStore.getState().sendMessage("新的任务");
+
+  const cancelIndex = calls.findIndex((call) => /POST .*\/api\/tasks\/task-old\/cancel$/.test(call));
+  const closeIndex = calls.findIndex((call) => /POST .*\/api\/browser\/close$/.test(call));
+  const createIndex = calls.findIndex((call) => /POST .*\/api\/tasks$/.test(call));
+  assert.ok(cancelIndex >= 0);
+  assert.ok(closeIndex > cancelIndex);
+  assert.ok(createIndex > closeIndex);
+  assert.equal(useAgentStore.getState().currentTaskId, "task-new");
+});
+
+test("late events stay with the previous task and cannot reset the current task", () => {
+  installDesktopBridge();
+  useAgentStore.setState({
+    currentConversationId: "conversation-a",
+    currentTaskId: "task-new",
+    visualState: "running",
+    messages: [
+      {
+        id: "old-user",
+        conversation_id: "conversation-a",
+        task_id: "task-old",
+        role: "user",
+        type: "user",
+        content: "旧任务",
+        created_at: "2026-01-01T00:00:01.000Z"
+      },
+      {
+        id: "new-user",
+        conversation_id: "conversation-a",
+        task_id: "task-new",
+        role: "user",
+        type: "user",
+        content: "新任务",
+        created_at: "2026-01-01T00:00:02.000Z"
+      }
+    ]
+  });
+
+  useAgentStore.getState().handleBackendEvent({
+    event_id: "late-answer",
+    type: "assistant_message",
+    task_id: "task-old",
+    conversation_id: "conversation-a",
+    timestamp: "2026-01-01T00:00:03.000Z",
+    payload: {
+      message: {
+        id: "old-answer",
+        conversation_id: "conversation-a",
+        task_id: "task-old",
+        role: "assistant",
+        type: "assistant",
+        content: "旧任务回答",
+        created_at: "2026-01-01T00:00:03.000Z"
+      }
+    }
+  });
+  useAgentStore.getState().handleBackendEvent({
+    event_id: "late-cancel",
+    type: "task_cancelled",
+    task_id: "task-old",
+    conversation_id: "conversation-a",
+    timestamp: "2026-01-01T00:00:04.000Z",
+    payload: {}
+  });
+  useAgentStore.getState().handleBackendEvent({
+    event_id: "late-state",
+    type: "agent_state_changed",
+    task_id: "task-old",
+    conversation_id: "conversation-a",
+    timestamp: "2026-01-01T00:00:05.000Z",
+    payload: { state: "idle" }
+  });
+  useAgentStore.getState().handleBackendEvent({
+    event_id: "late-start",
+    type: "task_started",
+    task_id: "task-old",
+    conversation_id: "conversation-a",
+    timestamp: "2026-01-01T00:00:06.000Z",
+    payload: { state: "running" }
+  });
+
+  assert.deepEqual(
+    useAgentStore.getState().messages.map((message) => message.id),
+    ["old-user", "old-answer", "new-user"]
+  );
+  assert.equal(useAgentStore.getState().currentTaskId, "task-new");
+  assert.equal(useAgentStore.getState().visualState, "running");
 });
