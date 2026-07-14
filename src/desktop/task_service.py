@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -16,9 +17,58 @@ from src.core.user_interaction import get_user_interaction_broker
 from src.desktop.database import DesktopDatabase
 from src.desktop.events import DesktopEventHub
 from src.desktop.prompts import parse_desktop_prompt
+from src.desktop.sensitive_result_store import SensitiveResultStore
 from src.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _public_sensitive_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Strip backend-only cursor fields before sending a one-shot event."""
+
+    return {
+        key: value
+        for key, value in payload.items()
+        if not str(key).startswith("_")
+    }
+
+
+def _is_wechat_desktop_task(content: str) -> bool:
+    normalized = content.strip().lower()
+    if any(term in normalized for term in ("怎么", "如何", "安全吗", "恢复方法")):
+        return False
+    if "微信" in normalized or "wechat" in normalized:
+        return any(
+            term in normalized
+            for term in (
+                "发送",
+                "发消息",
+                "发文件",
+                "传文件",
+                "关注",
+                "私信",
+                "公众号",
+                "服务号",
+                "读取",
+                "查看",
+                "查询",
+                "聊天记录",
+                "聊天历史",
+                "历史消息",
+            )
+        )
+    history_terms = ("聊天记录", "聊天历史", "历史消息", "消息记录", "最近聊天")
+    if any(term in normalized for term in ("公众号", "服务号")) and any(
+        term in normalized for term in ("关注", "订阅", "私信", "发送", "发消息")
+    ):
+        return True
+    if "文件传输助手" in normalized and any(term in normalized for term in history_terms):
+        return True
+    return (
+        any(prefix in normalized for prefix in ("我和", "我与"))
+        and any(term in normalized for term in ("最近", "历史", "以前", "从20"))
+        and any(term in normalized for term in ("聊天", "消息", "记录"))
+    )
 
 
 class DesktopTaskCancelled(RuntimeError):
@@ -133,6 +183,39 @@ class DesktopInteractionAdapter:
         self._events.clear()
         return events
 
+    def cancel_event(self) -> threading.Event:
+        return self._control.cancel_event
+
+    def publish_sensitive_result(
+        self,
+        kind: str,
+        payload: dict[str, Any],
+        *,
+        ttl_seconds: int = 1800,
+    ) -> str:
+        result_id = self._service.sensitive_results.put(
+            task_id=self._control.task_id,
+            conversation_id=self._control.conversation_id,
+            kind=kind,
+            payload=payload,
+            ttl_seconds=ttl_seconds,
+        )
+        self._service.events.publish(
+            f"{kind}_result",
+            task_id=self._control.task_id,
+            conversation_id=self._control.conversation_id,
+            payload={
+                "result_id": result_id,
+                **_public_sensitive_payload(payload),
+                "sensitive": True,
+                "persist": False,
+            },
+        )
+        return result_id
+
+    def summarize_sensitive_result(self, result_id: str) -> dict[str, Any]:
+        return self._service.summarize_sensitive_history(result_id)
+
 
 class DesktopTaskService:
     """Serialize Playwright tasks onto one worker and stream structured events."""
@@ -145,6 +228,7 @@ class DesktopTaskService:
         self._controls: dict[str, TaskControl] = {}
         self._confirmations: dict[str, ConfirmationWait] = {}
         self._active_task_id: str | None = None
+        self.sensitive_results = SensitiveResultStore()
 
     def create_task(
         self,
@@ -213,8 +297,18 @@ class DesktopTaskService:
                 payload={"state": "running"},
             )
 
+            desktop_only = _is_wechat_desktop_task(content)
             browser = get_browser_manager()
-            if not browser.is_alive():
+            if desktop_only:
+                if browser.is_alive():
+                    browser.close()
+                    self.events.publish(
+                        "browser_closed",
+                        task_id=control.task_id,
+                        conversation_id=control.conversation_id,
+                        payload={"reason": "desktop_only_task"},
+                    )
+            elif not browser.is_alive():
                 headless = os.getenv("BROWSER_HEADLESS", "false").lower() == "true"
                 browser.launch(headless=headless)
                 self.events.publish(
@@ -242,6 +336,7 @@ class DesktopTaskService:
                 max_steps=int(os.getenv("DESKTOP_AGENT_MAX_STEPS", "20")),
                 on_step=on_step,
                 cancel_check=control.cancel_event.is_set,
+                desktop_only=desktop_only,
             )
             result = agent.run(content)
             if control.cancel_event.is_set() or result.error == "任务已取消":
@@ -280,6 +375,7 @@ class DesktopTaskService:
             )
             threading.Timer(3.0, self._return_to_idle, args=(control.task_id,)).start()
         except DesktopTaskCancelled as exc:
+            self.sensitive_results.delete_for_task(control.task_id)
             self.database.cancel_pending_confirmations(control.task_id)
             self.database.update_task(control.task_id, "cancelled")
             message = self.database.add_message(
@@ -376,12 +472,139 @@ class DesktopTaskService:
         if control is None:
             return False
         control.cancel_event.set()
+        self.sensitive_results.delete_for_task(task_id)
         with self._lock:
             waits = list(self._confirmations.values())
         for wait in waits:
             with wait.condition:
                 wait.condition.notify_all()
         return True
+
+    def wx_cli_status(self) -> dict[str, Any]:
+        from dataclasses import asdict
+
+        from src.layer_1.wx_cli_client import WxCliClient
+
+        return asdict(WxCliClient().check_status())
+
+    def load_more_sensitive_history(
+        self, result_id: str, *, limit: int = 50
+    ) -> dict[str, Any]:
+        from src.layer_1.wechat_history_service import WechatHistoryService
+
+        entry = self.sensitive_results.get_entry(result_id)
+        if entry is None or entry.kind != "wechat_history":
+            raise KeyError("SENSITIVE_RESULT_EXPIRED")
+        payload = entry.payload
+        cursor = payload.get("_cursor")
+        if not isinstance(cursor, dict):
+            raise KeyError("SENSITIVE_RESULT_EXPIRED")
+        page = WechatHistoryService().read_more(
+            username=str(cursor.get("username") or ""),
+            display_name=str(payload.get("chat") or ""),
+            chat_type=str(payload.get("chat_type") or "unknown"),
+            limit=max(1, min(int(limit), 500)),
+            offset=int(cursor.get("next_offset") or 0),
+            since=cursor.get("since"),
+            until=cursor.get("until"),
+            message_type=cursor.get("message_type"),
+        )
+        current_messages = payload.get("messages")
+        if not isinstance(current_messages, list):
+            current_messages = []
+        combined = _dedupe_sensitive_messages(
+            [*current_messages, *[message.to_public_dict() for message in page.messages]]
+        )
+        updated = {
+            **payload,
+            "count": len(combined),
+            "messages": combined,
+            "meta": page.meta.to_public_dict(),
+            "warnings": list(
+                dict.fromkeys(
+                    [
+                        *list(payload.get("warnings") or []),
+                        *list(page.warnings),
+                    ]
+                )
+            ),
+            "_cursor": {
+                **cursor,
+                "next_offset": int(cursor.get("next_offset") or 0) + page.count,
+            },
+        }
+        if not self.sensitive_results.update(result_id, updated):
+            raise KeyError("SENSITIVE_RESULT_EXPIRED")
+        self.events.publish(
+            "wechat_history_result",
+            task_id=entry.task_id,
+            conversation_id=entry.conversation_id,
+            payload={
+                "result_id": result_id,
+                **_public_sensitive_payload(updated),
+                "sensitive": True,
+                "persist": False,
+            },
+        )
+        return {"ok": True, "result_id": result_id, "count": len(combined)}
+
+    def summarize_sensitive_history(self, result_id: str) -> dict[str, Any]:
+        from src.core.llm_client import get_llm_client
+
+        entry = self.sensitive_results.get_entry(result_id)
+        if entry is None or entry.kind != "wechat_history":
+            raise KeyError("SENSITIVE_RESULT_EXPIRED")
+        messages = entry.payload.get("messages")
+        if not isinstance(messages, list) or not messages:
+            raise ValueError("没有可供总结的微信聊天记录")
+        client = get_llm_client()
+        if not client.available:
+            raise ValueError("当前未配置可用的 AI 服务，无法总结")
+
+        chunks = _summary_chunks(messages)
+        partials = [
+            client.chat(
+                chunk,
+                system_prompt=(
+                    "以下是用户明确授权分析的微信聊天记录。只根据提供内容总结，"
+                    "不推断未出现的事实。区分明确事实、待办事项和不确定信息。"
+                    "不要进行人格、健康、政治倾向或信用评价。"
+                ),
+                temperature=0.1,
+                max_tokens=1200,
+            )
+            for chunk in chunks
+        ]
+        if len(partials) == 1:
+            summary = partials[0]
+        else:
+            summary = client.chat(
+                "请合并以下分段总结，按主要话题、关键结论、待办事项、日期和承诺、"
+                "需要跟进的问题组织，不新增事实：\n\n"
+                + "\n\n---\n\n".join(partials),
+                temperature=0.1,
+                max_tokens=1600,
+            )
+        stored = self.database.add_message(
+            f"message_{uuid.uuid4().hex}",
+            entry.conversation_id,
+            role="assistant",
+            message_type="result",
+            content=summary,
+            task_id=entry.task_id,
+            metadata={
+                "source": "wechat_history_summary",
+                "sensitive_source_omitted": True,
+                "message_count": len(messages),
+            },
+        )
+        self.events.publish(
+            "assistant_message",
+            task_id=entry.task_id,
+            conversation_id=entry.conversation_id,
+            payload={"message": stored},
+        )
+        return {"ok": True, "message": stored}
 
     def register_confirmation(self, confirmation_id: str, wait: ConfirmationWait) -> None:
         with self._lock:
@@ -459,4 +682,54 @@ class DesktopTaskService:
             controls = list(self._controls.values())
         for control in controls:
             control.cancel_event.set()
+        self.sensitive_results.clear()
         self._executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _dedupe_sensitive_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[Any, ...]] = set()
+    result: list[dict[str, Any]] = []
+    for message in messages:
+        key = (
+            message.get("local_id"),
+            message.get("timestamp"),
+            message.get("sender_username") or message.get("sender"),
+            message.get("content"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(message)
+    return result
+
+
+def _summary_chunks(messages: list[dict[str, Any]], max_chars: int = 24_000) -> list[str]:
+    chunks: list[str] = []
+    lines: list[str] = []
+    size = 0
+    for message in messages:
+        sender = (
+            message.get("sender_group_nickname")
+            or message.get("sender_contact_display")
+            or message.get("sender")
+            or "未知发送者"
+        )
+        content = str(message.get("content") or "")[:2000]
+        line = json.dumps(
+            {
+                "time": message.get("time") or message.get("timestamp"),
+                "sender": sender,
+                "type": message.get("type") or "unknown",
+                "content": content,
+            },
+            ensure_ascii=False,
+        )
+        if lines and size + len(line) > max_chars:
+            chunks.append("\n".join(lines))
+            lines = []
+            size = 0
+        lines.append(line)
+        size += len(line)
+    if lines:
+        chunks.append("\n".join(lines))
+    return chunks

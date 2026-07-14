@@ -33,6 +33,7 @@ export type DashboardSection =
   | "models"
   | "skills"
   | "browser"
+  | "wechat"
   | "permissions"
   | "logs"
   | "about";
