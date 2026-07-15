@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -34,41 +35,71 @@ def _public_sensitive_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _is_wechat_desktop_task(content: str) -> bool:
+    return _get_desktop_runtime_requirements(content).desktop_only
+
+
+@dataclass(frozen=True)
+class DesktopRuntimeRequirements:
+    desktop_only: bool = False
+    requires_wechat_ui: bool = False
+    requires_wx_cli: bool = False
+
+
+def _get_desktop_runtime_requirements(content: str) -> DesktopRuntimeRequirements:
     normalized = content.strip().lower()
     if any(term in normalized for term in ("怎么", "如何", "安全吗", "恢复方法")):
-        return False
-    if "微信" in normalized or "wechat" in normalized:
-        return any(
-            term in normalized
-            for term in (
-                "发送",
-                "发消息",
-                "发文件",
-                "传文件",
-                "关注",
-                "私信",
-                "公众号",
-                "服务号",
-                "读取",
-                "查看",
-                "查询",
-                "聊天记录",
-                "聊天历史",
-                "历史消息",
-            )
-        )
-    history_terms = ("聊天记录", "聊天历史", "历史消息", "消息记录", "最近聊天")
-    if any(term in normalized for term in ("公众号", "服务号")) and any(
-        term in normalized for term in ("关注", "订阅", "私信", "发送", "发消息")
-    ):
-        return True
-    if "文件传输助手" in normalized and any(term in normalized for term in history_terms):
-        return True
-    return (
+        return DesktopRuntimeRequirements()
+    history_terms = (
+        "聊天记录",
+        "聊天历史",
+        "历史消息",
+        "消息记录",
+        "最近聊天",
+        "最近消息",
+        "读取微信记录",
+        "查看微信记录",
+    )
+    has_history_action = any(
+        term in normalized for term in ("读取", "查看", "查询", "看看", "总结")
+    )
+    has_recent_message_range = bool(
+        re.search(r"最近\s*\d{0,4}\s*条?\s*(?:微信)?(?:聊天记录|消息|记录)", normalized)
+    )
+    has_history_intent = any(term in normalized for term in history_terms) or (
+        has_history_action and has_recent_message_range
+    )
+    if ("微信" in normalized or "wechat" in normalized) and has_history_intent:
+        return DesktopRuntimeRequirements(desktop_only=True, requires_wx_cli=True)
+    if "文件传输助手" in normalized and has_history_intent:
+        return DesktopRuntimeRequirements(desktop_only=True, requires_wx_cli=True)
+    if (
         any(prefix in normalized for prefix in ("我和", "我与"))
         and any(term in normalized for term in ("最近", "历史", "以前", "从20"))
         and any(term in normalized for term in ("聊天", "消息", "记录"))
+    ):
+        return DesktopRuntimeRequirements(desktop_only=True, requires_wx_cli=True)
+
+    has_wechat_name = "微信" in normalized or "wechat" in normalized
+    has_ui_action = any(
+        term in normalized
+        for term in (
+            "发送",
+            "发消息",
+            "发文件",
+            "传文件",
+            "关注",
+            "私信",
+            "公众号",
+            "服务号",
+        )
     )
+    if has_wechat_name and has_ui_action:
+        return DesktopRuntimeRequirements(desktop_only=True, requires_wechat_ui=True)
+    if any(term in normalized for term in ("公众号", "服务号")) and any(
+        term in normalized for term in ("关注", "订阅", "私信", "发送", "发消息")
+    ):
+        return DesktopRuntimeRequirements(desktop_only=True, requires_wechat_ui=True)
+    return DesktopRuntimeRequirements()
 
 
 class DesktopTaskCancelled(RuntimeError):
@@ -297,7 +328,8 @@ class DesktopTaskService:
                 payload={"state": "running"},
             )
 
-            desktop_only = _is_wechat_desktop_task(content)
+            requirements = _get_desktop_runtime_requirements(content)
+            desktop_only = requirements.desktop_only
             browser = get_browser_manager()
             if desktop_only:
                 if browser.is_alive():
@@ -308,7 +340,8 @@ class DesktopTaskService:
                         conversation_id=control.conversation_id,
                         payload={"reason": "desktop_only_task"},
                     )
-                self._initialize_wechat_runtime(control)
+                if requirements.requires_wx_cli:
+                    self._ensure_wx_cli_ready(control)
             elif not browser.is_alive():
                 headless = os.getenv("BROWSER_HEADLESS", "false").lower() == "true"
                 browser.launch(headless=headless)
@@ -442,19 +475,43 @@ class DesktopTaskService:
                 if self._active_task_id == control.task_id:
                     self._active_task_id = None
 
-    def _initialize_wechat_runtime(self, control: TaskControl) -> None:
+    def _ensure_wx_cli_ready(self, control: TaskControl) -> None:
+        from dataclasses import asdict
+
         from src.layer_1.wx_cli_client import WxCliClient, WxCliError
 
-        self.add_progress(control, "正在自动初始化 wx-cli...", details={"source": "wx_cli"})
-        try:
-            status = WxCliClient().initialize(cancel_event=control.cancel_event)
-        except WxCliError as exc:
-            if control.cancel_event.is_set() or exc.code == "WX_CLI_CANCELLED":
-                raise DesktopTaskCancelled("任务已取消") from exc
-            raise
+        self.add_progress(control, "正在检查 wx-cli 状态...", details={"source": "wx_cli"})
+        status = WxCliClient().check_status(cancel_event=control.cancel_event)
+        if control.cancel_event.is_set():
+            raise DesktopTaskCancelled("任务已取消")
+        if not status.initialized or not status.compatible:
+            payload = {
+                **asdict(status),
+                "title": "wx-cli 尚未准备好",
+                "commands": {
+                    "install": "npm.cmd ci --prefix tools/wx-cli",
+                    "initialize": "tools\\wx-cli\\node_modules\\.bin\\wx.cmd init",
+                    "force_initialize": "tools\\wx-cli\\node_modules\\.bin\\wx.cmd init --force",
+                    "verify": "tools\\wx-cli\\node_modules\\.bin\\wx.cmd sessions --json",
+                },
+            }
+            self.events.publish(
+                "wx_cli_setup_required",
+                task_id=control.task_id,
+                conversation_id=control.conversation_id,
+                payload=payload,
+            )
+            raise WxCliError(
+                code=status.error_code or "WX_CLI_SETUP_REQUIRED",
+                message=status.message,
+                stage=status.failure_stage,
+                diagnostic=status.diagnostic,
+                return_code=status.return_code,
+                user_action_required=True,
+            )
         self.add_progress(
             control,
-            f"wx-cli {status.version or ''} 初始化完成。".replace("  ", " "),
+            f"wx-cli {status.version or ''} 已就绪。".replace("  ", " "),
             details={"source": "wx_cli", "version": status.version},
         )
 
@@ -503,6 +560,13 @@ class DesktopTaskService:
         from src.layer_1.wx_cli_client import WxCliClient
 
         return asdict(WxCliClient().check_status())
+
+    def initialize_wx_cli(self, *, force: bool = False) -> dict[str, Any]:
+        from dataclasses import asdict
+
+        from src.layer_1.wx_cli_client import WxCliClient
+
+        return asdict(WxCliClient().initialize(force=force))
 
     def load_more_sensitive_history(
         self, result_id: str, *, limit: int = 50

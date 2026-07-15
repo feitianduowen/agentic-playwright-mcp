@@ -32,15 +32,3 @@ export interface WeChatHistoryResult {
   sensitive: true;
   persist: false;
 }
-
-export interface WxCliStatus {
-  installed: boolean;
-  executable: string | null;
-  version: string | null;
-  compatible: boolean;
-  initialized: boolean;
-  daemon_available: boolean;
-  sessions_available: boolean;
-  error_code: string | null;
-  message: string;
-}

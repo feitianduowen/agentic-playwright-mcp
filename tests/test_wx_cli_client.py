@@ -116,7 +116,7 @@ def test_invoke_honors_cancellation(tmp_path: Path) -> None:
     assert exc_info.value.code == "WX_CLI_CANCELLED"
 
 
-def test_initialize_runs_wx_init_and_verifies_status(tmp_path: Path) -> None:
+def test_initialize_skips_init_when_status_is_already_ready(tmp_path: Path) -> None:
     client = WxCliClient(
         resolver=StaticResolver(["wx.exe"]),
         repository_root=tmp_path,
@@ -138,20 +138,29 @@ def test_initialize_runs_wx_init_and_verifies_status(tmp_path: Path) -> None:
     client.check_status = MagicMock(return_value=status)
 
     assert client.initialize() == status
-    client._invoke.assert_called_once_with(
-        ["init"], timeout=120, cancel_event=None, command=["wx.exe"]
-    )
+    client._invoke.assert_not_called()
     client.check_status.assert_called_once_with(cancel_event=None)
 
 
-def test_initialize_uses_windows_elevation_after_permission_failure(
+def test_explicit_initialize_uses_windows_elevation_without_force(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     client = WxCliClient(
         resolver=StaticResolver(["wx.exe"]),
         repository_root=tmp_path,
     )
-    status = WxCliStatus(
+    not_ready = WxCliStatus(
+        installed=True,
+        executable="wx.exe",
+        version="0.3.0",
+        compatible=True,
+        initialized=False,
+        daemon_available=True,
+        sessions_available=False,
+        error_code="WX_CLI_INIT_REQUIRED",
+        message="setup required",
+    )
+    healthy = WxCliStatus(
         installed=True,
         executable="wx.exe",
         version="0.3.0",
@@ -162,22 +171,19 @@ def test_initialize_uses_windows_elevation_after_permission_failure(
         error_code=None,
         message="ok",
     )
-    client._invoke = MagicMock(
-        return_value=_CommandResult(1, "", "permission denied", 0.1)
-    )
     client._invoke_elevated_windows = MagicMock(
         return_value=_CommandResult(0, "", "", 0.2)
     )
-    client.check_status = MagicMock(return_value=status)
+    client.check_status = MagicMock(side_effect=[not_ready, healthy])
     monkeypatch.setattr("src.layer_1.wx_cli_client.sys.platform", "win32")
 
-    assert client.initialize() == status
+    assert client.initialize() == healthy
     client._invoke_elevated_windows.assert_called_once_with(
-        ["wx.exe"], ["init", "--force"], timeout=120, cancel_event=None
+        ["wx.exe"], ["init"], timeout=120, cancel_event=None
     )
 
 
-def test_initialize_forces_elevated_rescan_when_sessions_cannot_decrypt(
+def test_force_init_only_runs_after_explicit_force_request(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     client = WxCliClient(
@@ -192,7 +198,7 @@ def test_initialize_forces_elevated_rescan_when_sessions_cannot_decrypt(
         initialized=False,
         daemon_available=True,
         sessions_available=False,
-        error_code="WX_CLI_DECRYPT_FAILED",
+        error_code="WX_CLI_DATABASE_DECRYPT_FAILED",
         message="无法解密 session.db",
     )
     healthy = WxCliStatus(
@@ -215,7 +221,7 @@ def test_initialize_forces_elevated_rescan_when_sessions_cannot_decrypt(
     client.check_status = MagicMock(side_effect=[broken, healthy])
     monkeypatch.setattr("src.layer_1.wx_cli_client.sys.platform", "win32")
 
-    assert client.initialize() == healthy
+    assert client.initialize(force=True) == healthy
     client._invoke_elevated_windows.assert_called_once_with(
         ["wx.exe"], ["init", "--force"], timeout=120, cancel_event=None
     )
@@ -224,10 +230,80 @@ def test_initialize_forces_elevated_rescan_when_sessions_cannot_decrypt(
 
 def test_decrypt_failure_has_a_specific_error_code() -> None:
     error = WxCliClient._error_from_command(
-        _CommandResult(1, "", "错误: 无法解密 session.db", 0.1)
+        _CommandResult(1, "", "错误: 无法解密 session.db", 0.1),
+        stage="sessions",
     )
-    assert error.code == "WX_CLI_DECRYPT_FAILED"
+    assert error.code == "WX_CLI_DATABASE_DECRYPT_FAILED"
+    assert error.stage == "sessions"
     assert "密钥" in error.message
+
+
+def test_check_status_uses_sessions_as_primary_health_check(tmp_path: Path) -> None:
+    client = WxCliClient(
+        resolver=StaticResolver(["wx.exe"]),
+        repository_root=tmp_path,
+    )
+
+    def invoke(args, **_kwargs):
+        if args == ["--version"]:
+            return _CommandResult(0, "wx 0.3.0", "", 0.1)
+        if args[0] == "sessions":
+            return _CommandResult(0, '{"sessions": []}', "", 0.1)
+        return _CommandResult(1, "", "daemon unavailable", 0.1)
+
+    client._invoke = MagicMock(side_effect=invoke)
+    status = client.check_status()
+
+    assert status.initialized is True
+    assert status.sessions_available is True
+    assert status.daemon_available is False
+    assert status.failure_stage is None
+
+
+def test_check_status_rejects_unsupported_version_before_sessions(tmp_path: Path) -> None:
+    client = WxCliClient(
+        resolver=StaticResolver(["wx.exe"]),
+        repository_root=tmp_path,
+    )
+    client._invoke = MagicMock(
+        return_value=_CommandResult(0, "wx 0.4.0", "", 0.1)
+    )
+
+    status = client.check_status()
+
+    assert status.compatible is False
+    assert status.error_code == "WX_CLI_VERSION_UNSUPPORTED"
+    assert status.failure_stage == "version"
+    client._invoke.assert_called_once()
+
+
+def test_unknown_sessions_error_keeps_redacted_diagnostic(tmp_path: Path) -> None:
+    client = WxCliClient(
+        resolver=StaticResolver(["wx.exe"]),
+        repository_root=tmp_path,
+    )
+
+    def invoke(args, **_kwargs):
+        if args == ["--version"]:
+            return _CommandResult(0, "wx 0.3.0", "", 0.1)
+        if args[0] == "sessions":
+            return _CommandResult(
+                7,
+                "",
+                r"unexpected failure C:\Users\alice\db\session.db wxid_secret 0123456789abcdef0123456789abcdef",
+                0.1,
+            )
+        return _CommandResult(1, "", "daemon unavailable", 0.1)
+
+    client._invoke = MagicMock(side_effect=invoke)
+    status = client.check_status()
+
+    assert status.error_code == "WX_CLI_SESSIONS_FAILED"
+    assert status.failure_stage == "sessions"
+    assert status.return_code == 7
+    assert "C:\\Users\\alice" not in (status.diagnostic or "")
+    assert "wxid_secret" not in (status.diagnostic or "")
+    assert "0123456789abcdef0123456789abcdef" not in (status.diagnostic or "")
 
 
 def test_parse_history_wrapper_and_freshness_warning() -> None:

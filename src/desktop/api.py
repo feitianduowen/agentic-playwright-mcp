@@ -54,6 +54,10 @@ class SummarizeSensitiveResultRequest(BaseModel):
     approved: bool = False
 
 
+class InitializeWxCliRequest(BaseModel):
+    force: bool = False
+
+
 def _masked(value: str) -> str:
     value = value.strip()
     if not value:
@@ -121,6 +125,28 @@ def create_app(
     @app.get("/api/wx-cli/status", dependencies=[auth])
     def wx_cli_status() -> dict[str, Any]:
         return service.wx_cli_status()
+
+    @app.post("/api/wx-cli/recheck", dependencies=[auth])
+    def recheck_wx_cli() -> dict[str, Any]:
+        return service.wx_cli_status()
+
+    @app.post("/api/wx-cli/initialize", dependencies=[auth])
+    def initialize_wx_cli(body: InitializeWxCliRequest) -> dict[str, Any]:
+        try:
+            return service.initialize_wx_cli(force=body.force)
+        except Exception as exc:
+            code = getattr(exc, "code", "WX_CLI_INIT_FAILED")
+            stage = getattr(exc, "stage", None) or "init"
+            diagnostic = getattr(exc, "diagnostic", None)
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": code,
+                    "stage": stage,
+                    "message": str(exc),
+                    "diagnostic": diagnostic,
+                },
+            ) from exc
 
     @app.get("/api/conversations", dependencies=[auth])
     def conversations() -> list[dict[str, Any]]:

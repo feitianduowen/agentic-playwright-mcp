@@ -66,6 +66,9 @@ class WxCliError(RuntimeError):
         code: str,
         message: str,
         details: dict[str, Any] | None = None,
+        stage: str | None = None,
+        diagnostic: str | None = None,
+        return_code: int | None = None,
         retryable: bool = False,
         user_action_required: bool = False,
     ) -> None:
@@ -73,6 +76,9 @@ class WxCliError(RuntimeError):
         self.code = code
         self.message = message
         self.details = details or {}
+        self.stage = stage
+        self.diagnostic = diagnostic
+        self.return_code = return_code
         self.retryable = retryable
         self.user_action_required = user_action_required
 
@@ -177,6 +183,10 @@ class WxCliStatus:
     sessions_available: bool
     error_code: str | None
     message: str
+    invocation_kind: str | None = None
+    failure_stage: str | None = None
+    diagnostic: str | None = None
+    return_code: int | None = None
 
 
 @dataclass(frozen=True)
@@ -322,85 +332,44 @@ class WxCliClient:
     def initialize(
         self,
         *,
+        force: bool = False,
         cancel_event: threading.Event | None = None,
         timeout: float = 120,
     ) -> WxCliStatus:
-        """Run ``wx init`` before a WeChat task and verify the resulting state."""
+        """Initialize wx-cli only after an explicit user setup action."""
+
+        current = self.check_status(cancel_event=cancel_event)
+        if current.initialized and not force:
+            return current
 
         command = self.resolver.resolve()
-        elevated_force_used = False
-        result = self._invoke(
-            ["init"], timeout=timeout, cancel_event=cancel_event, command=command
-        )
-        if result.returncode != 0:
-            error = self._error_from_command(result)
-            if sys.platform != "win32" or error.code not in {
-                "WX_CLI_COMMAND_FAILED",
-                "WX_CLI_DECRYPT_FAILED",
-                "WX_CLI_NOT_INITIALIZED",
-                "WX_CLI_PERMISSION_DENIED",
-            }:
-                raise error
+        args = ["init", *( ["--force"] if force else [])]
+        if sys.platform == "win32":
             result = self._invoke_elevated_windows(
                 command,
-                ["init", "--force"],
+                args,
                 timeout=timeout,
                 cancel_event=cancel_event,
             )
-            elevated_force_used = True
-            if result.returncode != 0:
-                raise WxCliError(
-                    code="WX_CLI_INIT_FAILED",
-                    message=(
-                        "wx-cli 自动初始化失败。请确认微信已登录，并允许 Windows "
-                        "管理员权限提示后重试。"
-                    ),
-                    details={"returncode": result.returncode},
-                    retryable=True,
-                    user_action_required=True,
-                )
+        else:
+            result = self._invoke(
+                args, timeout=timeout, cancel_event=cancel_event, command=command
+            )
+        if result.returncode != 0:
+            raise self._error_from_command(result, stage="init")
 
         status = self.check_status(cancel_event=cancel_event)
-        if (
-            not status.initialized
-            and sys.platform == "win32"
-            and not elevated_force_used
-            and status.error_code
-            in {
-                "WX_CLI_COMMAND_FAILED",
-                "WX_CLI_DECRYPT_FAILED",
-                "WX_CLI_NOT_INITIALIZED",
-                "WX_CLI_PERMISSION_DENIED",
-            }
-        ):
-            result = self._invoke_elevated_windows(
-                command,
-                ["init", "--force"],
-                timeout=timeout,
-                cancel_event=cancel_event,
-            )
-            if result.returncode != 0:
-                raise WxCliError(
-                    code="WX_CLI_INIT_FAILED",
-                    message=(
-                        "wx-cli 管理员强制初始化失败。请确认微信已登录，"
-                        "并允许 Windows 管理员权限提示后重试。"
-                    ),
-                    details={"returncode": result.returncode},
-                    retryable=True,
-                    user_action_required=True,
-                )
-            status = self.check_status(cancel_event=cancel_event)
         if not status.initialized:
             raise WxCliError(
                 code=status.error_code or "WX_CLI_INIT_FAILED",
-                message=(
-                    f"wx-cli 自动初始化后仍无法读取微信会话：{status.message}"
-                ),
+                message=f"wx-cli 初始化后仍未就绪：{status.message}",
+                stage=status.failure_stage or "sessions",
+                diagnostic=status.diagnostic,
+                return_code=status.return_code,
                 retryable=True,
                 user_action_required=True,
             )
-        logger.info("wx-cli automatic initialization completed version=%s", status.version)
+        logger.info("wx-cli explicit initialization completed version=%s", status.version)
         return status
 
     def check_status(self, *, cancel_event: threading.Event | None = None) -> WxCliStatus:
@@ -417,22 +386,52 @@ class WxCliClient:
                 sessions_available=False,
                 error_code=exc.code,
                 message=exc.message,
+                failure_stage="resolve",
+                diagnostic=exc.diagnostic,
+                return_code=exc.return_code,
             )
 
-        version_result = self._invoke(
-            ["--version"], timeout=10, cancel_event=cancel_event, command=command
-        )
-        if version_result.returncode != 0:
+        executable = command[0]
+        invocation_kind = "native" if len(command) == 1 else "node_shim"
+
+        try:
+            version_result = self._invoke(
+                ["--version"], timeout=10, cancel_event=cancel_event, command=command
+            )
+        except WxCliError as exc:
+            if exc.code == "WX_CLI_CANCELLED":
+                raise
             return WxCliStatus(
                 installed=True,
-                executable=command[-1],
+                executable=executable,
                 version=None,
                 compatible=False,
                 initialized=False,
                 daemon_available=False,
                 sessions_available=False,
-                error_code="WX_CLI_COMMAND_FAILED",
-                message="无法读取 wx-cli 版本。",
+                error_code=exc.code,
+                message=exc.message,
+                invocation_kind=invocation_kind,
+                failure_stage=exc.stage or "version",
+                diagnostic=exc.diagnostic,
+                return_code=exc.return_code,
+            )
+        if version_result.returncode != 0:
+            error = self._error_from_command(version_result, stage="version")
+            return WxCliStatus(
+                installed=True,
+                executable=executable,
+                version=None,
+                compatible=False,
+                initialized=False,
+                daemon_available=False,
+                sessions_available=False,
+                error_code=error.code,
+                message=error.message,
+                invocation_kind=invocation_kind,
+                failure_stage=error.stage,
+                diagnostic=error.diagnostic,
+                return_code=error.return_code,
             )
         version_match = re.search(r"(\d+\.\d+\.\d+)", version_result.stdout)
         version = version_match.group(1) if version_match else None
@@ -440,7 +439,7 @@ class WxCliClient:
         if not compatible:
             return WxCliStatus(
                 installed=True,
-                executable=command[-1],
+                executable=executable,
                 version=version,
                 compatible=False,
                 initialized=False,
@@ -450,54 +449,95 @@ class WxCliClient:
                 message=(
                     f"检测到 wx-cli 版本 {version or 'unknown'}，当前仅支持 0.3.x。"
                 ),
+                invocation_kind=invocation_kind,
+                failure_stage="version",
             )
 
-        daemon = self._invoke(
-            ["daemon", "status"], timeout=10, cancel_event=cancel_event, command=command
-        )
-        sessions = self._invoke(
-            ["sessions", "--json", "--limit", "1"],
-            timeout=20,
-            cancel_event=cancel_event,
-            command=command,
-        )
-        if sessions.returncode != 0:
-            error = self._error_from_command(sessions)
+        try:
+            sessions = self._invoke(
+                ["sessions", "--json", "--limit", "1"],
+                timeout=30,
+                cancel_event=cancel_event,
+                command=command,
+            )
+        except WxCliError as exc:
+            if exc.code == "WX_CLI_CANCELLED":
+                raise
             return WxCliStatus(
                 installed=True,
-                executable=command[-1],
+                executable=executable,
                 version=version,
                 compatible=True,
                 initialized=False,
-                daemon_available=daemon.returncode == 0,
+                daemon_available=False,
+                sessions_available=False,
+                error_code=exc.code,
+                message=exc.message,
+                invocation_kind=invocation_kind,
+                failure_stage=exc.stage or "sessions",
+                diagnostic=exc.diagnostic,
+                return_code=exc.return_code,
+            )
+
+        daemon_available = False
+        try:
+            daemon = self._invoke(
+                ["daemon", "status"],
+                timeout=10,
+                cancel_event=cancel_event,
+                command=command,
+            )
+            daemon_available = daemon.returncode == 0
+        except WxCliError:
+            daemon_available = False
+
+        if sessions.returncode != 0:
+            error = self._error_from_command(sessions, stage="sessions")
+            return WxCliStatus(
+                installed=True,
+                executable=executable,
+                version=version,
+                compatible=True,
+                initialized=False,
+                daemon_available=daemon_available,
                 sessions_available=False,
                 error_code=error.code,
                 message=error.message,
+                invocation_kind=invocation_kind,
+                failure_stage=error.stage,
+                diagnostic=error.diagnostic,
+                return_code=error.return_code,
             )
         try:
             self._parse_json_object(sessions.stdout)
         except WxCliError as exc:
+            diagnostic = _safe_command_diagnostic(sessions.stdout, sessions.stderr)
             return WxCliStatus(
                 installed=True,
-                executable=command[-1],
+                executable=executable,
                 version=version,
                 compatible=True,
                 initialized=False,
-                daemon_available=daemon.returncode == 0,
+                daemon_available=daemon_available,
                 sessions_available=False,
                 error_code=exc.code,
                 message=exc.message,
+                invocation_kind=invocation_kind,
+                failure_stage="json_parse",
+                diagnostic=diagnostic,
+                return_code=sessions.returncode,
             )
         return WxCliStatus(
             installed=True,
-            executable=command[-1],
+            executable=executable,
             version=version,
             compatible=True,
             initialized=True,
-            daemon_available=daemon.returncode == 0,
+            daemon_available=daemon_available,
             sessions_available=True,
             error_code=None,
-            message="wx-cli 已安装并完成初始化。",
+            message="wx-cli 已就绪。",
+            invocation_kind=invocation_kind,
         )
 
     def find_chat_candidates(
@@ -515,7 +555,7 @@ class WxCliClient:
             command=command,
         )
         if sessions.returncode != 0:
-            raise self._error_from_command(sessions)
+            raise self._error_from_command(sessions, stage="contact_resolve")
         candidates = self._candidate_items(
             self._parse_json_object(sessions.stdout), requested, source="sessions"
         )
@@ -563,7 +603,7 @@ class WxCliClient:
         started = time.monotonic()
         result = self._invoke(command_args, timeout=60, cancel_event=cancel_event)
         if result.returncode != 0:
-            raise self._error_from_command(result)
+            raise self._error_from_command(result, stage="history")
         parsed = self._parse_history(self._parse_json_object(result.stdout), query)
         logger.info(
             "wx-cli history completed count=%d chat_type=%s meta_status=%s duration_ms=%d",
@@ -707,14 +747,18 @@ class WxCliClient:
             error_code = int(ctypes.windll.kernel32.GetLastError())
             if error_code == 1223:
                 raise WxCliError(
-                    code="WX_CLI_INIT_CANCELLED",
+                    code="WX_CLI_INIT_UAC_CANCELLED",
                     message="已取消 wx-cli 管理员权限初始化。",
+                    stage="elevated_init",
+                    return_code=error_code,
                     user_action_required=True,
                 )
             raise WxCliError(
-                code="WX_CLI_PERMISSION_DENIED",
+                code="WX_CLI_INIT_PERMISSION_DENIED",
                 message="无法请求 Windows 管理员权限来初始化 wx-cli。",
                 details={"windows_error": error_code},
+                stage="elevated_init",
+                return_code=error_code,
                 user_action_required=True,
             )
 
@@ -918,49 +962,116 @@ class WxCliClient:
         )
 
     @staticmethod
-    def _error_from_command(result: _CommandResult) -> WxCliError:
-        text = f"{result.stderr}\n{result.stdout}".lower()
+    def _error_from_command(
+        result: _CommandResult, *, stage: str = "command"
+    ) -> WxCliError:
+        diagnostic = _safe_command_diagnostic(result.stdout, result.stderr)
+        text = diagnostic.lower()
+        common = {
+            "stage": stage,
+            "diagnostic": diagnostic or None,
+            "return_code": result.returncode,
+            "details": {"returncode": result.returncode},
+        }
+        if any(token in text for token in ("wechat not running", "微信未运行")):
+            return WxCliError(
+                code="WX_CLI_WECHAT_NOT_RUNNING",
+                message="未检测到正在运行的微信客户端。",
+                user_action_required=True,
+                **common,
+            )
+        if any(token in text for token in ("not logged", "未登录", "尚未登录")):
+            return WxCliError(
+                code="WX_CLI_WECHAT_NOT_LOGGED_IN",
+                message="微信客户端尚未完成登录。",
+                user_action_required=True,
+                **common,
+            )
         if any(token in text for token in ("无法解密", "decrypt", "session.db")):
             return WxCliError(
-                code="WX_CLI_DECRYPT_FAILED",
-                message=(
-                    "wx-cli 无法解密 session.db，当前数据库密钥可能为空或已经失效。"
-                ),
+                code="WX_CLI_DATABASE_DECRYPT_FAILED",
+                message="wx-cli 无法解密当前微信数据库，密钥可能为空或已经失效。",
                 user_action_required=True,
+                **common,
+            )
+        if any(
+            token in text
+            for token in ("0 个候选密钥", "0/0 个密钥", "0 database keys")
+        ):
+            return WxCliError(
+                code="WX_CLI_KEY_EXTRACTION_FAILED",
+                message="wx-cli 未能从微信进程提取数据库密钥。",
+                user_action_required=True,
+                **common,
             )
         if any(token in text for token in ("未初始化", "not initialized", "all_keys")):
             return WxCliError(
-                code="WX_CLI_NOT_INITIALIZED",
-                message=(
-                    "wx-cli 尚未初始化。系统将在微信任务开始时自动执行 wx init；"
-                    "请保持微信已登录并允许 Windows 管理员权限提示。"
-                ),
+                code="WX_CLI_INIT_REQUIRED",
+                message="wx-cli 尚未完成一次性初始化。",
                 user_action_required=True,
+                **common,
             )
         if any(token in text for token in ("access denied", "permission denied", "权限")):
             return WxCliError(
-                code="WX_CLI_PERMISSION_DENIED",
-                message="wx-cli 无权读取本机微信数据，请检查初始化权限。",
+                code="WX_CLI_INIT_PERMISSION_DENIED",
+                message="wx-cli 没有足够权限完成初始化或读取本机微信数据。",
                 user_action_required=True,
+                **common,
             )
-        if any(token in text for token in ("wechat not running", "微信未运行")):
+        if any(token in text for token in ("database not found", "数据库不存在")):
             return WxCliError(
-                code="WECHAT_NOT_RUNNING",
-                message="微信客户端未运行，请登录微信后重试。",
+                code="WX_CLI_DATABASE_NOT_FOUND",
+                message="没有找到当前微信账号的本地数据库。",
                 user_action_required=True,
+                **common,
             )
-        if any(token in text for token in ("not found", "未找到", "no chat")):
+        if stage in {"history", "contact_resolve"} and any(
+            token in text for token in ("not found", "未找到", "no chat")
+        ):
             return WxCliError(
                 code="CHAT_NOT_FOUND",
                 message="没有找到指定的微信会话，请检查联系人备注名或群聊全名。",
                 user_action_required=True,
+                **common,
             )
-        return WxCliError(
-            code="WX_CLI_COMMAND_FAILED",
-            message="wx-cli 命令执行失败。",
-            details={"returncode": result.returncode},
-            retryable=True,
+
+        stage_codes = {
+            "version": ("WX_CLI_VERSION_FAILED", "无法读取 wx-cli 版本。"),
+            "init": ("WX_CLI_INIT_FAILED", "wx-cli 初始化失败。"),
+            "elevated_init": ("WX_CLI_INIT_FAILED", "wx-cli 管理员初始化失败。"),
+            "daemon": ("WX_CLI_DAEMON_FAILED", "wx-cli daemon 状态检查失败。"),
+            "sessions": ("WX_CLI_SESSIONS_FAILED", "wx-cli 在会话检测阶段执行失败。"),
+            "history": ("WX_CLI_HISTORY_FAILED", "wx-cli 在历史记录读取阶段执行失败。"),
+            "contact_resolve": ("CHAT_NOT_FOUND", "无法解析指定的微信会话。"),
+        }
+        code, message = stage_codes.get(
+            stage, ("WX_CLI_COMMAND_FAILED", f"wx-cli 在 {stage} 阶段执行失败。")
         )
+        return WxCliError(code=code, message=message, retryable=True, **common)
+
+
+def _safe_command_diagnostic(
+    stdout: str, stderr: str, *, max_length: int = 800
+) -> str:
+    """Keep useful command diagnostics while removing local identifiers."""
+
+    combined = "\n".join(
+        part.strip() for part in (stderr, stdout) if part and part.strip()
+    )
+    if not combined:
+        return ""
+    home = str(Path.home())
+    if home:
+        combined = re.sub(re.escape(home), "%USERPROFILE%", combined, flags=re.I)
+    combined = re.sub(r"(?i)wxid_[a-z0-9_-]+", "wxid_***", combined)
+    combined = re.sub(r"(?i)\b[0-9a-f]{32,}\b", "<redacted-key>", combined)
+    combined = re.sub(
+        r"(?im)^.*(?:all_keys\.json|config\.json).*(?:key|密钥).*$",
+        "<redacted wx-cli configuration detail>",
+        combined,
+    )
+    combined = re.sub(r"(?i)\b[a-z]:\\[^\r\n]+", "<local-path>", combined)
+    return combined[: max(0, int(max_length))]
 
 
 def normalize_history_query(

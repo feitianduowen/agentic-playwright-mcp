@@ -636,6 +636,61 @@ button { color: inherit; }
 .wx-status-list dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
 .settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
+.wx-setup-card {
+  margin: 8px 0;
+  padding: 14px;
+  border: 1px solid #e7a19a;
+  border-radius: 8px;
+  background: #fff7f4;
+  color: #3f2927;
+}
+.wx-setup-card > header {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 30px;
+  gap: 10px;
+  align-items: start;
+}
+.wx-setup-card > header > div { display: grid; gap: 3px; }
+.wx-setup-card > header span, .wx-setup-card > p { font-size: 13px; line-height: 1.5; }
+.wx-setup-status {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 6px 10px;
+  margin: 14px 0 10px;
+  font-size: 13px;
+}
+.wx-setup-status dt { color: var(--theme-text-muted); }
+.wx-setup-status dd { margin: 0; overflow-wrap: anywhere; }
+.wx-setup-actions, .wx-setup-copy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.wx-setup-actions button, .wx-setup-copy-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.wx-setup-copy-actions button {
+  border: 0;
+  background: transparent;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+.wx-setup-diagnostic { margin-top: 12px; font-size: 12px; }
+.wx-setup-diagnostic pre {
+  max-height: 150px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.05);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.wx-setup-error { color: #a52922; font-weight: 600; }
+
 @media (max-width: 860px) {
   .dashboard-shell { grid-template-columns: 170px minmax(0,1fr); }
   .dashboard-nav nav button { padding: 0 8px; }

@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from src.core.agent_loop import AgentLoop, AgentTaskResult
@@ -17,8 +18,10 @@ from src.desktop.task_service import (
     DesktopInteractionAdapter,
     DesktopTaskService,
     TaskControl,
+    _get_desktop_runtime_requirements,
     _is_wechat_desktop_task,
 )
+from src.layer_1.wx_cli_client import WxCliError, WxCliStatus
 from src.layer_2.controls import get_controls_exports
 
 
@@ -84,6 +87,17 @@ def test_wechat_tasks_are_classified_as_desktop_only() -> None:
     assert _is_wechat_desktop_task("读取我和张三最近 50 条聊天记录")
     assert _is_wechat_desktop_task("查看文件传输助手最近聊天记录")
     assert not _is_wechat_desktop_task("在知乎搜索微信聊天记录安全吗")
+    history = _get_desktop_runtime_requirements("微信查看张三最近 3 条聊天记录")
+    natural_history = _get_desktop_runtime_requirements("微信查看和居离的最近3条消息")
+    send = _get_desktop_runtime_requirements("微信给张三发送你好")
+    send_file = _get_desktop_runtime_requirements('微信给张三发送文件"D:\\tmp\\a.txt"')
+    assert history.requires_wx_cli is True
+    assert history.requires_wechat_ui is False
+    assert natural_history.requires_wx_cli is True
+    assert send.requires_wx_cli is False
+    assert send.requires_wechat_ui is True
+    assert send_file.requires_wx_cli is False
+    assert send_file.requires_wechat_ui is True
 
 
 def test_desktop_wechat_task_does_not_launch_browser(tmp_path: Path) -> None:
@@ -112,13 +126,97 @@ def test_desktop_wechat_task_does_not_launch_browser(tmp_path: Path) -> None:
     with (
         patch("src.desktop.task_service.get_browser_manager", return_value=browser),
         patch("src.desktop.task_service.AgentLoop", return_value=agent) as agent_class,
-        patch.object(service, "_initialize_wechat_runtime") as initialize,
+        patch.object(service, "_ensure_wx_cli_ready") as ensure_wx_cli,
     ):
         service._run_task(control, "微信给张三发送你好")
 
     browser.launch.assert_not_called()
-    initialize.assert_called_once_with(control)
+    ensure_wx_cli.assert_not_called()
     assert agent_class.call_args.kwargs["desktop_only"] is True
+    service.shutdown()
+
+
+def test_history_task_checks_status_without_initializing(tmp_path: Path) -> None:
+    database = DesktopDatabase(tmp_path / "history.db")
+    database.create_conversation("conversation-1", "微信历史")
+    database.add_message(
+        "user-1",
+        "conversation-1",
+        role="user",
+        message_type="user",
+        content="微信查看张三最近 3 条聊天记录",
+        task_id="task-1",
+    )
+    database.create_task("task-1", "conversation-1", "user-1")
+    service = DesktopTaskService(database, DesktopEventHub())
+    control = TaskControl(task_id="task-1", conversation_id="conversation-1")
+    browser = MagicMock()
+    browser.is_alive.return_value = False
+    agent = MagicMock()
+    agent.run.return_value = AgentTaskResult(
+        success=True,
+        task="微信查看张三最近 3 条聊天记录",
+        output="完成",
+    )
+
+    with (
+        patch("src.desktop.task_service.get_browser_manager", return_value=browser),
+        patch("src.desktop.task_service.AgentLoop", return_value=agent),
+        patch.object(service, "_ensure_wx_cli_ready") as ensure_wx_cli,
+    ):
+        service._run_task(control, "微信查看张三最近 3 条聊天记录")
+
+    ensure_wx_cli.assert_called_once_with(control)
+    browser.launch.assert_not_called()
+    service.shutdown()
+
+
+def test_unready_wx_cli_publishes_setup_required_without_initializing(
+    tmp_path: Path,
+) -> None:
+    database = DesktopDatabase(tmp_path / "setup.db")
+    database.create_conversation("conversation-1", "微信历史")
+    database.add_message(
+        "user-1",
+        "conversation-1",
+        role="user",
+        message_type="user",
+        content="读取微信历史记录",
+        task_id="task-1",
+    )
+    database.create_task("task-1", "conversation-1", "user-1")
+    events = MagicMock(spec=DesktopEventHub)
+    service = DesktopTaskService(database, events)
+    control = TaskControl(task_id="task-1", conversation_id="conversation-1")
+    status = WxCliStatus(
+        installed=True,
+        executable="wx.exe",
+        version="0.3.0",
+        compatible=True,
+        initialized=False,
+        daemon_available=True,
+        sessions_available=False,
+        error_code="WX_CLI_DATABASE_DECRYPT_FAILED",
+        message="无法解密数据库",
+        failure_stage="sessions",
+        diagnostic="无法解密 session.db",
+        return_code=1,
+    )
+    client = MagicMock()
+    client.check_status.return_value = status
+
+    with patch("src.layer_1.wx_cli_client.WxCliClient", return_value=client):
+        with pytest.raises(WxCliError) as exc_info:
+            service._ensure_wx_cli_ready(control)
+
+    assert exc_info.value.code == "WX_CLI_DATABASE_DECRYPT_FAILED"
+    client.check_status.assert_called_once_with(cancel_event=control.cancel_event)
+    client.initialize.assert_not_called()
+    setup_event = next(
+        call for call in events.publish.call_args_list if call.args[0] == "wx_cli_setup_required"
+    )
+    assert setup_event.kwargs["payload"]["failure_stage"] == "sessions"
+    assert setup_event.kwargs["payload"]["diagnostic"] == "无法解密 session.db"
     service.shutdown()
 
 
@@ -239,3 +337,23 @@ def test_wx_cli_status_api_does_not_expose_sensitive_data(tmp_path: Path) -> Non
     assert response.status_code == 200
     assert response.json() == status
     assert "messages" not in response.json()
+
+
+def test_wx_cli_initialize_api_requires_explicit_post(tmp_path: Path) -> None:
+    status = {
+        "installed": True,
+        "initialized": True,
+        "compatible": True,
+        "version": "0.3.0",
+    }
+    with patch.object(DesktopTaskService, "initialize_wx_cli", return_value=status) as initialize:
+        app = create_app(token="test-token", database_path=tmp_path / "init.db")
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/wx-cli/initialize",
+                headers={"Authorization": "Bearer test-token"},
+                json={"force": True},
+            )
+    assert response.status_code == 200
+    assert response.json() == status
+    initialize.assert_called_once_with(force=True)

@@ -423,3 +423,46 @@ test("wechat history events stay outside persisted chat messages", () => {
     "敏感原文"
   );
 });
+
+test("wx-cli setup events stay structured and outside chat history", () => {
+  installDesktopBridge();
+  useAgentStore.setState({
+    currentConversationId: "conversation-setup",
+    currentTaskId: "task-setup",
+    messages: [],
+    wxCliSetupRequest: null
+  });
+
+  useAgentStore.getState().handleBackendEvent({
+    event_id: "wx-setup-1",
+    type: "wx_cli_setup_required",
+    task_id: "task-setup",
+    conversation_id: "conversation-setup",
+    timestamp: "2026-07-15T00:00:00.000Z",
+    payload: {
+      title: "wx-cli 尚未准备好",
+      installed: true,
+      initialized: false,
+      compatible: true,
+      daemon_available: true,
+      sessions_available: false,
+      failure_stage: "sessions",
+      error_code: "WX_CLI_DATABASE_DECRYPT_FAILED",
+      message: "无法解密数据库",
+      diagnostic: "无法解密 session.db",
+      commands: {
+        install: "npm.cmd ci --prefix tools/wx-cli",
+        initialize: "wx init",
+        force_initialize: "wx init --force",
+        verify: "wx sessions --json"
+      }
+    }
+  });
+
+  assert.deepEqual(useAgentStore.getState().messages, []);
+  assert.equal(useAgentStore.getState().wxCliSetupRequest?.failure_stage, "sessions");
+  assert.equal(
+    useAgentStore.getState().wxCliSetupRequest?.error_code,
+    "WX_CLI_DATABASE_DECRYPT_FAILED"
+  );
+});
