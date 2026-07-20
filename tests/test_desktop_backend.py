@@ -212,6 +212,22 @@ def test_optional_prompt_field_default_is_not_replaced_by_detected_value() -> No
     assert prompt["default_value"] == "宋体"
 
 
+def test_url_prompt_using_provide_is_rendered_as_input() -> None:
+    questions = [
+        "请问您想在哪个网站上点击赛事？请提供网站URL或更多细节",
+        "当前页面是 about:blank，没有可交互元素。请提供您要导航的目标网站 URL，以便点击赛事",
+        "请提供目标网站URL或描述，以便导航到包含赛事的页面",
+    ]
+
+    for question in questions:
+        prompt = parse_desktop_prompt(question)
+        assert prompt["prompt_type"] == "input"
+        assert prompt["input_required"] is True
+        assert prompt["actions"] == [
+            {"id": "submit", "label": "提交并继续", "value": None}
+        ]
+
+
 def test_confirmation_resolution_preserves_selected_option(tmp_path) -> None:
     database = DesktopDatabase(tmp_path / "resolve.db")
     database.create_conversation("conversation_1", "测试")
