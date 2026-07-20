@@ -551,7 +551,7 @@ function registerIpc(): void {
   ipcMain.handle("pet:collapse", () => collapsePet());
   ipcMain.handle("pet:is-expanded", () => expanded);
   ipcMain.handle("pet:show-menu", () => showPetMenu());
-  ipcMain.handle("dashboard:open", (_event, section: unknown) => createDashboardWindow(normalizeDashboardSection(section)));
+  ipcMain.handle("dashboard:open", (_event, section: unknown) => { createDashboardWindow(normalizeDashboardSection(section)); });
   ipcMain.handle("window:get-bounds", (event) => BrowserWindow.fromWebContents(event.sender)?.getBounds());
   ipcMain.handle(
     "pet:resize-expanded",
