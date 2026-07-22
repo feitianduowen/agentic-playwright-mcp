@@ -761,7 +761,7 @@ class ExploreAgent:
                     Action(
                         action=ActionType.PAUSE_FOR_INPUT,
                         value=(
-                            "当前页面缺少可靠的语义信息，视觉识别也不可用。"
+                            "OCR 和深度扫描均未能找到目标元素，视觉模型也未配置。"
                             "请手动完成当前步骤后继续。"
                         ),
                         intent=batch.vision_reason,
