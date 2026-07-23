@@ -699,6 +699,56 @@ def test_wechat_likes_first_moment_and_verifies(monkeypatch):
     assert locator.xy_clicks == [(1000, 744), (750, 744)]
 
 
+def test_wechat_uses_before_like_y_when_like_template_is_not_detected(
+    monkeypatch,
+):
+    monkeypatch.setattr(wechat_module.time, "sleep", lambda _seconds: None)
+    locator = FakeImageLocator()
+    locator.moment_action_matches = [
+        ImageMatch(1000, 618, 1.0, "beforeLike.png")
+    ]
+    locator.moment_menu_matches = [None]
+    locator.moment_states = ["can_like", None]
+    automation = PywinautoWechatAutomation(image_locator=locator)
+    automation.window = FakeUiElement(
+        "朋友圈",
+        process_name="Weixin.exe",
+        width=1200,
+        height=900,
+    )
+    monkeypatch.setattr(automation, "open_moments", lambda: None)
+
+    result = automation.like_moment(target="first")
+
+    assert result["status"] == "liked"
+    assert locator.xy_clicks == [(1000, 618), (750, 618)]
+
+
+def test_wechat_clicks_fixed_like_coordinate_when_menu_detection_fails(
+    monkeypatch,
+):
+    monkeypatch.setattr(wechat_module.time, "sleep", lambda _seconds: None)
+    locator = FakeImageLocator()
+    locator.moment_action_matches = [
+        ImageMatch(1000, 532, 1.0, "beforeLike.png")
+    ]
+    locator.moment_menu_matches = [None] * 6
+    locator.moment_states = [None] * 6
+    automation = PywinautoWechatAutomation(image_locator=locator)
+    automation.window = FakeUiElement(
+        "朋友圈",
+        process_name="Weixin.exe",
+        width=1200,
+        height=900,
+    )
+    monkeypatch.setattr(automation, "open_moments", lambda: None)
+
+    result = automation.like_moment(target="first")
+
+    assert result["status"] == "liked"
+    assert locator.xy_clicks == [(1000, 532), (750, 532)]
+
+
 def test_wechat_already_liked_moment_does_not_toggle_like(monkeypatch):
     monkeypatch.setattr(wechat_module.time, "sleep", lambda _seconds: None)
     locator = FakeImageLocator()

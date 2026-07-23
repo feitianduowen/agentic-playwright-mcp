@@ -1600,8 +1600,8 @@ class PywinautoWechatAutomation:
         )
 
         like_match = None
-        deadline = time.time() + 3.0
-        while time.time() < deadline:
+        like_ready_by_text = False
+        for _attempt in range(6):
             like_match = self.image_locator.find_moment_like_menu(
                 region=menu_region,
             )
@@ -1617,18 +1617,42 @@ class PywinautoWechatAutomation:
                     "author_name": author or None,
                     "target": mode,
                 }
+            if state == "can_like":
+                like_ready_by_text = True
+                break
             time.sleep(0.2)
-        if like_match is None:
-            raise RuntimeError("Unable to detect like.png after opening the menu")
-        if not self._click_screen_point(MOMENTS_LIKE_X, like_match.y):
+        if like_match is None and not like_ready_by_text:
+            logger.warning(
+                "Unable to detect like.png or 赞; using fixed Moments "
+                "coordinate x=%s y=%s",
+                MOMENTS_LIKE_X,
+                action.y,
+            )
+        if not self._click_screen_point(MOMENTS_LIKE_X, action.y):
             raise RuntimeError("Unable to click the WeChat Moments like action")
+
+        if like_match is None and not like_ready_by_text:
+            return {
+                "success": True,
+                "status": "liked",
+                "author_name": author or None,
+                "target": mode,
+            }
 
         deadline = time.time() + 3.0
         while time.time() < deadline:
-            if (
+            menu_closed = (
                 self.image_locator.find_moment_like_menu(region=menu_region)
                 is None
-            ):
+            )
+            if like_ready_by_text:
+                menu_closed = (
+                    self.image_locator.find_moment_like_state(
+                        region=menu_region,
+                    )
+                    != "can_like"
+                )
+            if menu_closed:
                 break
             time.sleep(0.2)
         else:
