@@ -357,14 +357,16 @@ def _ocr_salary_from_card(page: Any, card_index: int) -> str:
         logger.warning("BOSS OCR[%d]: ocr module is None", card_index)
         return ""
 
-    # 先用 JS 直接定位第 N 个卡片内的薪资元素，取其 bounding box
-    # 这比 page.locator().nth() 更可靠
+    # 先用 JS 定位第 N 个卡片内的薪资元素，滚动到可见区域后取 bounding box
     box_info = page.evaluate("""(index) => {
         const cards = document.querySelectorAll('li.job-card-box');
         if (index >= cards.length) return null;
         const card = cards[index];
         const salaryEl = card.querySelector('.job-salary, [class*="job-salary"]');
         if (!salaryEl) return {found: false, card_text: (card.innerText || '').substring(0, 100)};
+        // 先滚动到元素可见
+        salaryEl.scrollIntoView({block: 'center'});
+        // 等一帧让滚动生效后再取坐标
         const rect = salaryEl.getBoundingClientRect();
         return {
             found: true,
@@ -373,6 +375,9 @@ def _ocr_salary_from_card(page: Any, card_index: int) -> str:
             visible: rect.width > 0 && rect.height > 0,
         };
     }""", card_index)
+
+    # 等滚动动画完成
+    page.wait_for_timeout(300)
 
     if not box_info:
         logger.warning("BOSS OCR[%d]: card not found", card_index)
