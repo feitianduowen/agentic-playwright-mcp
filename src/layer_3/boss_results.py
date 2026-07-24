@@ -373,6 +373,13 @@ def _ocr_salary_from_card(page: Any, card_index: int) -> str:
 
     try:
         result = asyncio.run(ocr.recognize(screenshot_bytes))
+    except RuntimeError:
+        # asyncio.run() 不能在已运行的事件循环中调用（Playwright 场景）
+        # 用新线程运行独立事件循环
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(asyncio.run, ocr.recognize(screenshot_bytes))
+            result = future.result(timeout=10)
     except Exception:
         return ""
 
